@@ -282,15 +282,14 @@
     }).join('');
 
     return `
+      <header class="topbar playlist-menu-bar">
+        <button class="icon-button" type="button" data-action="back-home" aria-label="Back">${icons.back}</button>
+        <div class="topbar-actions">
+          <button class="icon-button" type="button" data-action="search" aria-label="Search">${icons.search}</button>
+          <button class="icon-button kebab-button" type="button" data-action="edit-playlist" data-playlist-id="${playlist.id}" aria-label="Edit playlist">${icons.kebab}</button>
+        </div>
+      </header>
       <main class="screen playlist-screen ${runtime.transition === 'forward' ? 'screen-enter-forward' : ''}">
-        <header class="topbar">
-          <button class="icon-button" type="button" data-action="back-home" aria-label="Back">${icons.back}</button>
-          <div class="topbar-actions">
-            <button class="icon-button" type="button" data-action="search" aria-label="Search">${icons.search}</button>
-            <button class="icon-button kebab-button" type="button" data-action="edit-playlist" data-playlist-id="${playlist.id}" aria-label="Edit playlist">${icons.kebab}</button>
-          </div>
-        </header>
-
         <section class="playlist-hero">
           <div class="playlist-hero-cover">${coverMarkup(playlist)}</div>
           <div class="playlist-heading-row">
@@ -358,7 +357,7 @@
           <div class="player-context">${track && playlist ? `${escapeHtml(playlist.name)} · ${escapeHtml(state.profile.name)}` : ''}</div>
         </button>
         <div class="waveform" data-action="seek" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-          ${waveform}<span class="wave-progress" style="left:0%"></span>
+          <div class="waveform-data">${waveform}</div><span class="wave-progress"></span>
         </div>
         <button class="player-share" type="button" data-action="share-track" aria-label="Share track information">${icons.share}</button>
       </aside>
@@ -378,8 +377,8 @@
     const ratio = duration ? Math.max(0, Math.min(1, audio.currentTime / duration)) : 0;
     const bars = [...dock.querySelectorAll('.wave-bar')];
     bars.forEach((bar, index) => bar.classList.toggle('played', index / bars.length <= ratio));
-    const progress = dock.querySelector('.wave-progress');
-    if (progress) progress.style.left = `${ratio * 100}%`;
+    const waveformData = dock.querySelector('.waveform-data');
+    if (waveformData) waveformData.style.transform = `translate3d(-${ratio * 100}%, 0, 0)`;
     const waveform = dock.querySelector('.waveform');
     if (waveform) waveform.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
   }
@@ -406,12 +405,14 @@
         <div class="now-playing-controls">
           <button class="now-playing-toggle" type="button" aria-label="${audio.paused ? 'Play' : 'Pause'}">${audio.paused ? icons.play : icons.pause}</button>
           <div class="now-playing-waveform" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            ${nowPlayingWaveformMarkup()}<span class="wave-progress" style="left:0%"></span>
+            <div class="waveform-data">${nowPlayingWaveformMarkup()}</div><span class="wave-progress"></span>
           </div>
           <button class="now-playing-share" type="button" aria-label="Share track information">${icons.share}</button>
         </div>
       </section>
     `);
+
+    modalRoot.querySelector('.modal-backdrop')?.classList.add('now-playing-backdrop');
 
     modalRoot.querySelector('.now-playing-toggle')?.addEventListener('click', () => {
       togglePlayback();
@@ -450,8 +451,8 @@
     const ratio = duration ? Math.max(0, Math.min(1, audio.currentTime / duration)) : 0;
     const bars = [...modal.querySelectorAll('.wave-bar')];
     bars.forEach((bar, index) => bar.classList.toggle('played', index / bars.length <= ratio));
-    const progress = modal.querySelector('.wave-progress');
-    if (progress) progress.style.left = `${ratio * 100}%`;
+    const waveformData = modal.querySelector('.waveform-data');
+    if (waveformData) waveformData.style.transform = `translate3d(-${ratio * 100}%, 0, 0)`;
     const waveform = modal.querySelector('.now-playing-waveform');
     if (waveform) waveform.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
   }
