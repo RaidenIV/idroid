@@ -2038,3 +2038,17 @@ body.scrubbing {
     pointer-events: auto;
   }
 }
+
+/* Accurate waveform rendering and smooth scrub tracking. */
+.waveform-data,
+.now-playing-waveform .waveform-data {
+  transition: none !important;
+}
+
+body.scrubbing .player-dock .scrub-readout,
+.player-dock.is-scrubbing .scrub-readout,
+.waveform.is-scrubbing .scrub-readout {
+  display: flex;
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}

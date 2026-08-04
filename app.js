@@ -40,6 +40,10 @@
     'linear-gradient(145deg, #e3e3e3 0%, #737373 100%)'
   ];
 
+
+  const WAVEFORM_SAMPLE_COUNT = 256;
+  const WAVEFORM_MIN_VALUE = 0.035;
+
   const runtime = {
     view: 'home',
     playlistId: null,
@@ -55,7 +59,11 @@
     warmedTracks: new Set(),
     uploadToast: null,
     scrub: null,
-    repeatOne: false
+    repeatOne: false,
+    waveformAnalyses: new Map(),
+    playbackFrame: 0,
+    playbackFrameTimestamp: 0,
+    audioContext: null
   };
 
   let state = null;
@@ -92,6 +100,67 @@
     };
   }
 
+  function normalizeWaveform(value) {
+    let candidate = value;
+    if (typeof candidate === 'string') {
+      try { candidate = JSON.parse(candidate); } catch (_) { candidate = []; }
+    }
+    if (!Array.isArray(candidate)) return [];
+    return candidate
+      .slice(0, 1024)
+      .map((sample) => Math.max(0, Math.min(1, Number(sample) || 0)))
+      .filter(Number.isFinite);
+  }
+
+  function resampleWaveform(samples, targetCount = WAVEFORM_SAMPLE_COUNT) {
+    const source = normalizeWaveform(samples);
+    const count = Math.max(16, Math.floor(targetCount));
+    if (!source.length) return [];
+    if (source.length === count) return source;
+
+    const result = [];
+    for (let index = 0; index < count; index += 1) {
+      const start = Math.floor((index * source.length) / count);
+      const end = Math.max(start + 1, Math.floor(((index + 1) * source.length) / count));
+      let peak = 0;
+      for (let sourceIndex = start; sourceIndex < end && sourceIndex < source.length; sourceIndex += 1) {
+        peak = Math.max(peak, source[sourceIndex]);
+      }
+      result.push(peak);
+    }
+    return result;
+  }
+
+  function fallbackWaveform(track, targetCount = WAVEFORM_SAMPLE_COUNT) {
+    const seedText = `${track?.id || ''}:${track?.contentHash || ''}:${track?.fileName || ''}`;
+    let seed = 2166136261;
+    for (let index = 0; index < seedText.length; index += 1) {
+      seed ^= seedText.charCodeAt(index);
+      seed = Math.imul(seed, 16777619);
+    }
+
+    return Array.from({ length: targetCount }, (_, index) => {
+      seed ^= seed << 13;
+      seed ^= seed >>> 17;
+      seed ^= seed << 5;
+      const random = ((seed >>> 0) % 1000) / 1000;
+      const envelope = 0.42 + (Math.sin(index * 0.083) + 1) * 0.15;
+      return Math.max(WAVEFORM_MIN_VALUE, Math.min(1, envelope * (0.35 + random * 0.65)));
+    });
+  }
+
+  function waveformSamplesForTrack(track, targetCount = WAVEFORM_SAMPLE_COUNT) {
+    const samples = resampleWaveform(track?.waveform, targetCount);
+    return samples.length ? samples : fallbackWaveform(track, targetCount);
+  }
+
+  function waveformMarkup(track, targetCount = WAVEFORM_SAMPLE_COUNT) {
+    return waveformSamplesForTrack(track, targetCount).map((sample) => {
+      const height = Math.round((WAVEFORM_MIN_VALUE + Math.pow(sample, 0.82) * (1 - WAVEFORM_MIN_VALUE)) * 100);
+      return `<span class="wave-bar" style="height:${height}%"></span>`;
+    }).join('');
+  }
+
   function cleanTrackMetadata(track = {}) {
     return {
       id: track.id || createId('track'),
@@ -104,7 +173,8 @@
       duration: Number(track.duration) || 0,
       addedAt: track.addedAt || new Date().toISOString(),
       storageName: track.storageName || '',
-      contentHash: track.contentHash || ''
+      contentHash: track.contentHash || '',
+      waveform: normalizeWaveform(track.waveform)
     };
   }
 
@@ -356,10 +426,7 @@
   function renderPlayerDock() {
     const playlist = getPlaylist(runtime.activePlaylistId);
     const track = getTrack(runtime.activePlaylistId, runtime.activeTrackId);
-    const waveform = Array.from({ length: 43 }, (_, index) => {
-      const height = 16 + ((index * 17 + 13) % 30);
-      return `<span class="wave-bar" style="height:${height}px"></span>`;
-    }).join('');
+    const waveform = waveformMarkup(track);
 
     return `
       <aside class="player-dock ${track ? 'visible' : ''}" aria-label="Now playing">
@@ -368,7 +435,7 @@
           <div class="player-track">${track ? escapeHtml(track.title) : 'Nothing playing'}</div>
           <div class="player-context">${track && playlist ? `${escapeHtml(playlist.name)} · ${escapeHtml(state.profile.name)}` : ''}</div>
         </button>
-        <div class="waveform" data-scrubber="dock" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="waveform" data-scrubber="dock" data-track-id="${track ? escapeHtml(track.id) : ''}" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <div class="waveform-viewport">
             <div class="waveform-data">${waveform}</div>
             <span class="wave-progress"></span>
@@ -391,22 +458,21 @@
     }
 
     const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
-    const ratio = duration ? Math.max(0, Math.min(1, audio.currentTime / duration)) : 0;
+    const liveRatio = duration ? Math.max(0, Math.min(1, audio.currentTime / duration)) : 0;
+    const ratio = runtime.scrub?.previewRatio ?? liveRatio;
     const waveform = dock.querySelector('.waveform');
     updateWaveformDom(waveform, ratio, duration);
   }
 
-  function nowPlayingWaveformMarkup() {
-    return Array.from({ length: 94 }, (_, index) => {
-      const height = 19 + ((index * 17 + 13) % 39);
-      return `<span class="wave-bar" style="height:${height}px"></span>`;
-    }).join('');
+  function nowPlayingWaveformMarkup(track) {
+    return waveformMarkup(track);
   }
 
   function openNowPlayingModal() {
     const playlist = getPlaylist(runtime.activePlaylistId);
     const track = getTrack(runtime.activePlaylistId, runtime.activeTrackId);
     if (!playlist || !track) return;
+    ensureTrackWaveform(track);
 
     openModal(`
       <section class="now-playing-modal" aria-label="Now playing">
@@ -415,9 +481,9 @@
           <p class="now-playing-context">${escapeHtml(playlist.name)} · ${escapeHtml(state.profile.name)}</p>
         </div>
         <div class="now-playing-cover">${coverMarkup(playlist)}</div>
-        <div class="now-playing-waveform" data-scrubber="modal" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+        <div class="now-playing-waveform" data-scrubber="modal" data-track-id="${escapeHtml(track.id)}" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <div class="waveform-viewport">
-            <div class="waveform-data">${nowPlayingWaveformMarkup()}</div>
+            <div class="waveform-data">${nowPlayingWaveformMarkup(track)}</div>
             <span class="wave-progress"></span>
           </div>
         </div>
@@ -480,13 +546,15 @@
     }
 
     const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
-    const ratio = duration ? Math.max(0, Math.min(1, audio.currentTime / duration)) : 0;
+    const liveRatio = duration ? Math.max(0, Math.min(1, audio.currentTime / duration)) : 0;
+    const ratio = runtime.scrub?.previewRatio ?? liveRatio;
+    const previewTime = duration > 0 ? ratio * duration : 0;
     const waveform = modal.querySelector('.now-playing-waveform');
     updateWaveformDom(waveform, ratio, duration);
 
     const current = modal.querySelector('.now-playing-current');
     const total = modal.querySelector('.now-playing-duration');
-    if (current) current.textContent = formatPlaybackTime(audio.currentTime);
+    if (current) current.textContent = formatPlaybackTime(previewTime);
     if (total) total.textContent = formatPlaybackTime(duration);
   }
 
@@ -884,7 +952,7 @@
     runtime.uploadToast = null;
   }
 
-  function uploadTrackFile(playlistId, file, duration, onProgress) {
+  function uploadTrackFile(playlistId, file, duration, waveform, onProgress) {
     return new Promise((resolve, reject) => {
       const request = new XMLHttpRequest();
       request.open('POST', `/api/playlists/${encodeURIComponent(playlistId)}/tracks`);
@@ -905,6 +973,7 @@
       form.append('title', stripExtension(file.name));
       form.append('lastModified', String(file.lastModified || 0));
       form.append('duration', String(duration || 0));
+      if (waveform?.length) form.append('waveform', JSON.stringify(waveform));
       request.send(form);
     });
   }
@@ -930,11 +999,12 @@
       const file = supportedFiles[index];
       try {
         showUploadProgress(file.name, index + 1, supportedFiles.length, 0);
-        const duration = await readDuration(file);
+        const analysis = await analyzeAudioFile(file);
         const result = await uploadTrackFile(
           playlistId,
           file,
-          duration,
+          analysis.duration,
+          analysis.waveform,
           (percent) => showUploadProgress(file.name, index + 1, supportedFiles.length, percent)
         );
         if (result.state) state = result.state;
@@ -956,7 +1026,61 @@
     if (parts.length) showToast(parts.join(' · '), Boolean(failed && !added));
   }
 
-  async function readDuration(file) {
+  function getAudioContext() {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) return null;
+    if (!runtime.audioContext || runtime.audioContext.state === 'closed') {
+      runtime.audioContext = new AudioContextClass();
+    }
+    return runtime.audioContext;
+  }
+
+  function buildWaveformFromAudioBuffer(buffer, sampleCount = WAVEFORM_SAMPLE_COUNT) {
+    const length = Math.max(1, buffer.length || 1);
+    const channels = Math.max(1, buffer.numberOfChannels || 1);
+    const samples = [];
+
+    for (let sampleIndex = 0; sampleIndex < sampleCount; sampleIndex += 1) {
+      const start = Math.floor((sampleIndex * length) / sampleCount);
+      const end = Math.max(start + 1, Math.floor(((sampleIndex + 1) * length) / sampleCount));
+      const stride = Math.max(1, Math.floor((end - start) / 640));
+      let peak = 0;
+      let energy = 0;
+      let points = 0;
+
+      for (let channelIndex = 0; channelIndex < channels; channelIndex += 1) {
+        const channel = buffer.getChannelData(channelIndex);
+        for (let frame = start; frame < end; frame += stride) {
+          const amplitude = Math.abs(channel[frame] || 0);
+          peak = Math.max(peak, amplitude);
+          energy += amplitude * amplitude;
+          points += 1;
+        }
+      }
+
+      const rms = points ? Math.sqrt(energy / points) : 0;
+      samples.push(peak * 0.72 + rms * 0.28);
+    }
+
+    const sorted = [...samples].sort((a, b) => a - b);
+    const reference = sorted[Math.max(0, Math.floor(sorted.length * 0.97) - 1)] || Math.max(...samples, 1);
+    return samples.map((sample) => {
+      const normalized = Math.max(0, Math.min(1, sample / Math.max(reference, 0.00001)));
+      return Math.round(Math.pow(normalized, 0.78) * 1000) / 1000;
+    });
+  }
+
+  async function analyzeAudioArrayBuffer(arrayBuffer) {
+    const context = getAudioContext();
+    if (!context) throw new Error('Audio waveform analysis is unavailable in this browser.');
+    const decoded = await context.decodeAudioData(arrayBuffer.slice(0));
+    return {
+      duration: Number.isFinite(decoded.duration) ? decoded.duration : 0,
+      waveform: buildWaveformFromAudioBuffer(decoded)
+    };
+  }
+
+  async function readDurationFallback(file) {
     const url = URL.createObjectURL(file);
     try {
       return await new Promise((resolve) => {
@@ -976,6 +1100,54 @@
     } finally {
       URL.revokeObjectURL(url);
     }
+  }
+
+  async function analyzeAudioFile(file) {
+    try {
+      return await analyzeAudioArrayBuffer(await file.arrayBuffer());
+    } catch (error) {
+      console.warn(`Could not analyze ${file.name}; the waveform will be generated after playback starts.`, error);
+      return { duration: await readDurationFallback(file), waveform: [] };
+    }
+  }
+
+  function refreshWaveformDisplays(track) {
+    if (!track) return;
+    document.querySelectorAll(`[data-track-id="${CSS.escape(track.id)}"]`).forEach((surface) => {
+      const data = surface.querySelector('.waveform-data');
+      if (data) data.innerHTML = waveformMarkup(track);
+      delete surface.dataset.playedCount;
+    });
+    updatePlayerDom();
+    updateNowPlayingModal();
+  }
+
+  function ensureTrackWaveform(track) {
+    if (!track?.storageName || normalizeWaveform(track.waveform).length) return Promise.resolve(track?.waveform || []);
+    if (runtime.waveformAnalyses.has(track.id)) return runtime.waveformAnalyses.get(track.id);
+
+    const analysis = new Promise((resolve) => {
+      window.setTimeout(async () => {
+        try {
+          const response = await fetch(trackStreamUrl(track), { cache: 'force-cache' });
+          if (!response.ok) throw new Error(`Waveform request failed (${response.status}).`);
+          const result = await analyzeAudioArrayBuffer(await response.arrayBuffer());
+          track.waveform = result.waveform;
+          if (!track.duration && result.duration) track.duration = result.duration;
+          refreshWaveformDisplays(track);
+          await saveState();
+          resolve(track.waveform);
+        } catch (error) {
+          console.warn(`Could not generate the waveform for ${track.title}.`, error);
+          resolve([]);
+        } finally {
+          runtime.waveformAnalyses.delete(track.id);
+        }
+      }, 900);
+    });
+
+    runtime.waveformAnalyses.set(track.id, analysis);
+    return analysis;
   }
 
   function trackStreamUrl(track) {
@@ -1041,6 +1213,7 @@
     render();
     updateMediaSession();
     warmTrack(playlist.tracks.find((item) => item.id === runtime.queue[runtime.queueIndex + 1]));
+    ensureTrackWaveform(track);
     try {
       await playPromise;
     } catch (error) {
@@ -1081,7 +1254,16 @@
     if (!element) return;
     const safeRatio = Math.max(0, Math.min(1, Number(ratio) || 0));
     const bars = [...element.querySelectorAll('.wave-bar')];
-    bars.forEach((bar, index) => bar.classList.toggle('played', index / Math.max(1, bars.length - 1) <= safeRatio));
+    const playedCount = bars.length ? Math.min(bars.length, Math.floor(safeRatio * Math.max(1, bars.length - 1)) + 1) : 0;
+    const previousCount = Number(element.dataset.playedCount);
+    if (!Number.isFinite(previousCount)) {
+      bars.forEach((bar, index) => bar.classList.toggle('played', index < playedCount));
+    } else if (playedCount > previousCount) {
+      for (let index = previousCount; index < playedCount; index += 1) bars[index]?.classList.add('played');
+    } else if (playedCount < previousCount) {
+      for (let index = playedCount; index < previousCount; index += 1) bars[index]?.classList.remove('played');
+    }
+    element.dataset.playedCount = String(playedCount);
 
     const waveformData = element.querySelector('.waveform-data');
     if (waveformData) waveformData.style.transform = `translate3d(-${safeRatio * 100}%, 0, 0)`;
@@ -1094,14 +1276,31 @@
     if (total) total.textContent = formatPlaybackTime(duration);
   }
 
-  function seekFromPointer(event, element) {
-    if (!Number.isFinite(audio.duration) || audio.duration <= 0 || !element) return 0;
+  function ratioFromPointer(clientX, element) {
+    if (!element) return 0;
     const rect = element.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
-    audio.currentTime = ratio * audio.duration;
+    return Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+  }
+
+  function paintScrubPreview(ratio) {
+    const scrub = runtime.scrub;
+    if (!scrub) return;
+    scrub.previewRatio = Math.max(0, Math.min(1, Number(ratio) || 0));
     updatePlayerDom();
     updateNowPlayingModal();
-    return ratio;
+  }
+
+  function scheduleScrubPreview(clientX) {
+    const scrub = runtime.scrub;
+    if (!scrub) return;
+    scrub.pendingClientX = clientX;
+    if (scrub.frame) return;
+    scrub.frame = requestAnimationFrame(() => {
+      const active = runtime.scrub;
+      if (!active) return;
+      active.frame = 0;
+      paintScrubPreview(ratioFromPointer(active.pendingClientX, active.element));
+    });
   }
 
   function beginScrub(event) {
@@ -1112,11 +1311,15 @@
     event.preventDefault();
     event.stopPropagation();
     const wasPlaying = !audio.paused;
+    const currentRatio = Math.max(0, Math.min(1, audio.currentTime / audio.duration));
     runtime.scrub = {
       pointerId: event.pointerId,
       element,
       wasPlaying,
-      surface: element.dataset.scrubber
+      surface: element.dataset.scrubber,
+      previewRatio: currentRatio,
+      pendingClientX: event.clientX,
+      frame: 0
     };
 
     document.body.classList.add('scrubbing');
@@ -1125,20 +1328,39 @@
     modalRoot.querySelector('.now-playing-modal')?.classList.add('is-scrubbing');
     try { element.setPointerCapture(event.pointerId); } catch (_) { /* Older Safari can reject pointer capture. */ }
     if (wasPlaying) audio.pause();
-    seekFromPointer(event, element);
+    paintScrubPreview(ratioFromPointer(event.clientX, element));
   }
 
   function moveScrub(event) {
     const scrub = runtime.scrub;
     if (!scrub || scrub.pointerId !== event.pointerId) return;
     event.preventDefault();
-    seekFromPointer(event, scrub.element);
+    scheduleScrubPreview(event.clientX);
   }
 
   function endScrub(event) {
     const scrub = runtime.scrub;
     if (!scrub || scrub.pointerId !== event.pointerId) return;
-    seekFromPointer(event, scrub.element);
+    event.preventDefault();
+
+    if (scrub.frame) cancelAnimationFrame(scrub.frame);
+    const finalRatio = event.type === 'pointercancel'
+      ? scrub.previewRatio
+      : ratioFromPointer(event.clientX, scrub.element);
+    scrub.previewRatio = finalRatio;
+    updatePlayerDom();
+    updateNowPlayingModal();
+
+    const targetTime = finalRatio * audio.duration;
+    if (Number.isFinite(targetTime)) {
+      try {
+        if (typeof audio.fastSeek === 'function') audio.fastSeek(targetTime);
+        else audio.currentTime = targetTime;
+      } catch (_) {
+        audio.currentTime = targetTime;
+      }
+    }
+
     try { scrub.element.releasePointerCapture(event.pointerId); } catch (_) { /* Ignore unsupported capture release. */ }
     scrub.element.classList.remove('is-scrubbing');
     app.querySelector('.player-dock')?.classList.remove('is-scrubbing');
@@ -1146,7 +1368,33 @@
     document.body.classList.remove('scrubbing');
     runtime.scrub = null;
     runtime.suppressClickUntil = Date.now() + 180;
+    updatePlayerDom();
+    updateNowPlayingModal();
     if (scrub.wasPlaying) audio.play().catch(() => undefined);
+  }
+
+  function startPlaybackUiLoop() {
+    if (runtime.playbackFrame) return;
+    const tick = (timestamp) => {
+      if (audio.paused || runtime.scrub) {
+        runtime.playbackFrame = 0;
+        runtime.playbackFrameTimestamp = 0;
+        return;
+      }
+      if (!runtime.playbackFrameTimestamp || timestamp - runtime.playbackFrameTimestamp >= 30) {
+        runtime.playbackFrameTimestamp = timestamp;
+        updatePlayerDom();
+        updateNowPlayingModal();
+      }
+      runtime.playbackFrame = requestAnimationFrame(tick);
+    };
+    runtime.playbackFrame = requestAnimationFrame(tick);
+  }
+
+  function stopPlaybackUiLoop() {
+    if (runtime.playbackFrame) cancelAnimationFrame(runtime.playbackFrame);
+    runtime.playbackFrame = 0;
+    runtime.playbackFrameTimestamp = 0;
   }
 
   async function shareCurrentTrack() {
@@ -1440,8 +1688,8 @@
 
   audio.addEventListener('timeupdate', () => { updatePlayerDom(); updateNowPlayingModal(); });
   audio.addEventListener('durationchange', () => { updatePlayerDom(); updateNowPlayingModal(); });
-  audio.addEventListener('play', () => { updatePlayerDom(); updateNowPlayingModal(); updateMediaSession(); });
-  audio.addEventListener('pause', () => { updatePlayerDom(); updateNowPlayingModal(); updateMediaSession(); });
+  audio.addEventListener('play', () => { updatePlayerDom(); updateNowPlayingModal(); updateMediaSession(); startPlaybackUiLoop(); });
+  audio.addEventListener('pause', () => { updatePlayerDom(); updateNowPlayingModal(); updateMediaSession(); stopPlaybackUiLoop(); });
   audio.addEventListener('ended', () => {
     if (runtime.repeatOne) {
       audio.currentTime = 0;

@@ -72,6 +72,18 @@ function sanitizeDataUrl(value) {
   return /^data:image\/(?:png|jpe?g|webp);base64,/i.test(string) ? string : null;
 }
 
+function sanitizeWaveform(value) {
+  let candidate = value;
+  if (typeof candidate === 'string') {
+    try { candidate = JSON.parse(candidate); } catch (_) { candidate = []; }
+  }
+  if (!Array.isArray(candidate)) return [];
+  return candidate
+    .slice(0, 1024)
+    .map((sample) => Math.max(0, Math.min(1, Number(sample) || 0)))
+    .filter(Number.isFinite);
+}
+
 function sanitizeTrack(track = {}) {
   return {
     id: safeString(track.id, createId('track'), 160),
@@ -84,7 +96,8 @@ function sanitizeTrack(track = {}) {
     duration: Math.max(0, Number(track.duration) || 0),
     addedAt: safeString(track.addedAt, new Date().toISOString(), 100),
     storageName: safeString(track.storageName, '', 300),
-    contentHash: safeString(track.contentHash, '', 128)
+    contentHash: safeString(track.contentHash, '', 128),
+    waveform: sanitizeWaveform(track.waveform)
   };
 }
 
@@ -303,9 +316,25 @@ app.post('/api/playlists/:playlistId/tracks', upload.single('file'), async (req,
       const originalName = decodeOriginalName(req.file.originalname);
       const lastModified = Math.max(0, Number(req.body.lastModified) || 0);
       const fingerprint = `${originalName}::${req.file.size}::${lastModified}`;
+      const submittedWaveform = sanitizeWaveform(req.body.waveform);
+      const submittedDuration = Math.max(0, Number(req.body.duration) || 0);
+      const mergeAnalysis = (track) => {
+        let changed = false;
+        if (!track.waveform?.length && submittedWaveform.length) {
+          track.waveform = submittedWaveform;
+          changed = true;
+        }
+        if (!track.duration && submittedDuration) {
+          track.duration = submittedDuration;
+          changed = true;
+        }
+        return changed;
+      };
+
       const existingFingerprint = playlist.tracks.find((track) => track.fingerprint === fingerprint);
       if (existingFingerprint) {
         await fsp.rm(temporaryPath, { force: true });
+        if (mergeAnalysis(existingFingerprint)) await writeState();
         return { skipped: true, track: existingFingerprint };
       }
 
@@ -313,6 +342,7 @@ app.post('/api/playlists/:playlistId/tracks', upload.single('file'), async (req,
       const existingContent = playlist.tracks.find((track) => track.contentHash === contentHash);
       if (existingContent) {
         await fsp.rm(temporaryPath, { force: true });
+        if (mergeAnalysis(existingContent)) await writeState();
         return { skipped: true, track: existingContent };
       }
 
@@ -337,10 +367,11 @@ app.post('/api/playlists/:playlistId/tracks', upload.single('file'), async (req,
         size: req.file.size,
         lastModified,
         type: safeString(req.file.mimetype, '', 200),
-        duration: Math.max(0, Number(req.body.duration) || 0),
+        duration: submittedDuration,
         addedAt: new Date().toISOString(),
         storageName,
-        contentHash
+        contentHash,
+        waveform: submittedWaveform
       });
 
       playlist.tracks.push(track);
