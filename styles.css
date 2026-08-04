@@ -2052,3 +2052,100 @@ body.scrubbing .player-dock .scrub-readout,
   opacity: 1;
   transform: translateX(-50%) translateY(0);
 }
+
+/* Inverted drag scrubbing, animated time readout, and a shorter Now Playing card. */
+.scrub-readout {
+  transform-origin: 50% 100%;
+  transform: translateX(-50%) translateY(10px) scale(.42, .22);
+  transition: opacity .14s ease, transform .22s cubic-bezier(.2, .85, .3, 1.15);
+}
+
+@keyframes scrub-time-expand {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(10px) scale(.42, .22);
+  }
+  72% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(-1px) scale(1.04, 1.04);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1, 1);
+  }
+}
+
+body.scrubbing .player-dock .scrub-readout,
+.player-dock.is-scrubbing .scrub-readout,
+.waveform.is-scrubbing .scrub-readout,
+.now-playing-modal.is-scrubbing .scrub-readout,
+.now-playing-waveform.is-scrubbing .scrub-readout {
+  display: flex;
+  opacity: 1;
+  transform: translateX(-50%) translateY(0) scale(1, 1);
+  animation: scrub-time-expand .24s cubic-bezier(.2, .85, .3, 1.15) both;
+}
+
+.now-playing-waveform {
+  overflow: visible;
+}
+
+.now-playing-waveform .scrub-readout {
+  top: -68px;
+}
+
+.now-playing-waveform .scrub-line {
+  top: -68px;
+}
+
+.now-playing-modal.is-scrubbing .scrub-line,
+.now-playing-waveform.is-scrubbing .scrub-line {
+  opacity: 1;
+}
+
+.now-playing-sheet {
+  height: auto;
+  max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 72px);
+  overflow-y: auto;
+}
+
+.now-playing-modal {
+  height: auto;
+  grid-template-rows: auto auto 76px auto 78px;
+}
+
+.now-playing-cover {
+  max-height: none;
+}
+
+@media (max-width: 620px) {
+  .now-playing-sheet {
+    height: auto;
+    max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 64px);
+  }
+
+  .now-playing-modal {
+    grid-template-rows: auto auto 64px auto 68px;
+  }
+
+  .now-playing-waveform .scrub-readout,
+  .now-playing-waveform .scrub-line {
+    top: -60px;
+  }
+}
+
+@media (max-width: 430px) {
+  .now-playing-sheet {
+    height: auto;
+    max-height: calc(100dvh - var(--safe-top) - var(--safe-bottom) - 54px);
+  }
+
+  .now-playing-modal {
+    grid-template-rows: auto auto 58px auto 62px;
+  }
+
+  .now-playing-waveform .scrub-readout,
+  .now-playing-waveform .scrub-line {
+    top: -56px;
+  }
+}

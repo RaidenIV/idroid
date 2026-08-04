@@ -486,6 +486,8 @@
             <div class="waveform-data">${nowPlayingWaveformMarkup(track)}</div>
             <span class="wave-progress"></span>
           </div>
+          <span class="scrub-line" aria-hidden="true"></span>
+          <div class="scrub-readout" aria-hidden="true"><span class="scrub-current">0:00</span><span class="scrub-divider">/</span><span class="scrub-total">0:00</span></div>
         </div>
         <div class="now-playing-time" aria-live="off">
           <span class="now-playing-current">0:00</span><span aria-hidden="true">/</span><span class="now-playing-duration">0:00</span>
@@ -1276,10 +1278,10 @@
     if (total) total.textContent = formatPlaybackTime(duration);
   }
 
-  function ratioFromPointer(clientX, element) {
-    if (!element) return 0;
-    const rect = element.getBoundingClientRect();
-    return Math.max(0, Math.min(1, (clientX - rect.left) / Math.max(1, rect.width)));
+  function ratioFromScrubPointer(clientX, scrub) {
+    if (!scrub) return 0;
+    const deltaX = Number(clientX) - scrub.startClientX;
+    return Math.max(0, Math.min(1, scrub.startRatio - (deltaX / Math.max(1, scrub.width))));
   }
 
   function paintScrubPreview(ratio) {
@@ -1299,7 +1301,7 @@
       const active = runtime.scrub;
       if (!active) return;
       active.frame = 0;
-      paintScrubPreview(ratioFromPointer(active.pendingClientX, active.element));
+      paintScrubPreview(ratioFromScrubPointer(active.pendingClientX, active));
     });
   }
 
@@ -1312,12 +1314,16 @@
     event.stopPropagation();
     const wasPlaying = !audio.paused;
     const currentRatio = Math.max(0, Math.min(1, audio.currentTime / audio.duration));
+    const scrubBounds = element.getBoundingClientRect();
     runtime.scrub = {
       pointerId: event.pointerId,
       element,
       wasPlaying,
       surface: element.dataset.scrubber,
       previewRatio: currentRatio,
+      startRatio: currentRatio,
+      startClientX: event.clientX,
+      width: Math.max(1, scrubBounds.width),
       pendingClientX: event.clientX,
       frame: 0
     };
@@ -1328,7 +1334,7 @@
     modalRoot.querySelector('.now-playing-modal')?.classList.add('is-scrubbing');
     try { element.setPointerCapture(event.pointerId); } catch (_) { /* Older Safari can reject pointer capture. */ }
     if (wasPlaying) audio.pause();
-    paintScrubPreview(ratioFromPointer(event.clientX, element));
+    paintScrubPreview(currentRatio);
   }
 
   function moveScrub(event) {
@@ -1346,7 +1352,7 @@
     if (scrub.frame) cancelAnimationFrame(scrub.frame);
     const finalRatio = event.type === 'pointercancel'
       ? scrub.previewRatio
-      : ratioFromPointer(event.clientX, scrub.element);
+      : ratioFromScrubPointer(event.clientX, scrub);
     scrub.previewRatio = finalRatio;
     updatePlayerDom();
     updateNowPlayingModal();
