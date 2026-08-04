@@ -20,6 +20,9 @@
     local: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="m8 12 4 4 4-4M12 8v8"></path></svg>',
     linkOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 13.5 8 16a4 4 0 0 1-5.7-5.6l3-3a4 4 0 0 1 5.6 0"></path><path d="m13.5 10.5 2.5-2.5a4 4 0 0 1 5.7 5.6l-3 3a4 4 0 0 1-5.6 0"></path><path d="m3 3 18 18"></path></svg>',
     share: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3"></path><path d="m7 8 5-5 5 5"></path><path d="M5 12v8h14v-8"></path></svg>',
+    previous: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="3" height="14" rx="1"></rect><path d="m20 5-11 7 11 7z"></path></svg>',
+    next: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="17" y="5" width="3" height="14" rx="1"></rect><path d="m4 5 11 7-11 7z"></path></svg>',
+    repeat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2.5 21 6l-4 3.5"></path><path d="M3 11V9a3 3 0 0 1 3-3h15"></path><path d="m7 21.5-4-3.5L7 14.5"></path><path d="M21 13v2a3 3 0 0 1-3 3H3"></path></svg>',
     pencil: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z"></path><path d="m14 7 3 3"></path></svg>',
     trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14"></path></svg>',
     delete: '<span class="masked-icon delete-icon" aria-hidden="true"></span>',
@@ -50,7 +53,9 @@
     navSwipe: null,
     transition: null,
     warmedTracks: new Set(),
-    uploadToast: null
+    uploadToast: null,
+    scrub: null,
+    repeatOne: false
   };
 
   let state = null;
@@ -182,6 +187,13 @@
     if (!Number.isFinite(seconds) || seconds <= 0) return '--:--';
     const minutes = Math.floor(seconds / 60);
     const remaining = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return `${minutes}:${remaining}`;
+  }
+
+  function formatPlaybackTime(seconds) {
+    const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+    const minutes = Math.floor(safeSeconds / 60);
+    const remaining = Math.floor(safeSeconds % 60).toString().padStart(2, '0');
     return `${minutes}:${remaining}`;
   }
 
@@ -344,8 +356,8 @@
   function renderPlayerDock() {
     const playlist = getPlaylist(runtime.activePlaylistId);
     const track = getTrack(runtime.activePlaylistId, runtime.activeTrackId);
-    const waveform = Array.from({ length: 31 }, (_, index) => {
-      const height = 18 + ((index * 17 + 13) % 32);
+    const waveform = Array.from({ length: 43 }, (_, index) => {
+      const height = 16 + ((index * 17 + 13) % 30);
       return `<span class="wave-bar" style="height:${height}px"></span>`;
     }).join('');
 
@@ -356,8 +368,13 @@
           <div class="player-track">${track ? escapeHtml(track.title) : 'Nothing playing'}</div>
           <div class="player-context">${track && playlist ? `${escapeHtml(playlist.name)} · ${escapeHtml(state.profile.name)}` : ''}</div>
         </button>
-        <div class="waveform" data-action="seek" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-          <div class="waveform-data">${waveform}</div><span class="wave-progress"></span>
+        <div class="waveform" data-scrubber="dock" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="waveform-viewport">
+            <div class="waveform-data">${waveform}</div>
+            <span class="wave-progress"></span>
+          </div>
+          <span class="scrub-line" aria-hidden="true"></span>
+          <div class="scrub-readout" aria-hidden="true"><span class="scrub-current">0:00</span><span class="scrub-divider">/</span><span class="scrub-total">0:00</span></div>
         </div>
         <button class="player-share" type="button" data-action="share-track" aria-label="Share track information">${icons.share}</button>
       </aside>
@@ -375,17 +392,13 @@
 
     const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
     const ratio = duration ? Math.max(0, Math.min(1, audio.currentTime / duration)) : 0;
-    const bars = [...dock.querySelectorAll('.wave-bar')];
-    bars.forEach((bar, index) => bar.classList.toggle('played', index / bars.length <= ratio));
-    const waveformData = dock.querySelector('.waveform-data');
-    if (waveformData) waveformData.style.transform = `translate3d(-${ratio * 100}%, 0, 0)`;
     const waveform = dock.querySelector('.waveform');
-    if (waveform) waveform.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
+    updateWaveformDom(waveform, ratio, duration);
   }
 
   function nowPlayingWaveformMarkup() {
-    return Array.from({ length: 39 }, (_, index) => {
-      const height = 18 + ((index * 17 + 13) % 34);
+    return Array.from({ length: 94 }, (_, index) => {
+      const height = 19 + ((index * 17 + 13) % 39);
       return `<span class="wave-bar" style="height:${height}px"></span>`;
     }).join('');
   }
@@ -397,30 +410,42 @@
 
     openModal(`
       <section class="now-playing-modal" aria-label="Now playing">
-        <div class="now-playing-cover">${coverMarkup(playlist)}</div>
         <div class="now-playing-copy">
           <h2 class="now-playing-title">${escapeHtml(track.title)}</h2>
           <p class="now-playing-context">${escapeHtml(playlist.name)} · ${escapeHtml(state.profile.name)}</p>
         </div>
-        <div class="now-playing-controls">
-          <button class="now-playing-toggle" type="button" aria-label="${audio.paused ? 'Play' : 'Pause'}">${audio.paused ? icons.play : icons.pause}</button>
-          <div class="now-playing-waveform" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <div class="waveform-data">${nowPlayingWaveformMarkup()}</div><span class="wave-progress"></span>
+        <div class="now-playing-cover">${coverMarkup(playlist)}</div>
+        <div class="now-playing-waveform" data-scrubber="modal" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div class="waveform-viewport">
+            <div class="waveform-data">${nowPlayingWaveformMarkup()}</div>
+            <span class="wave-progress"></span>
           </div>
-          <button class="now-playing-share" type="button" aria-label="Share track information">${icons.share}</button>
+        </div>
+        <div class="now-playing-time" aria-live="off">
+          <span class="now-playing-current">0:00</span><span aria-hidden="true">/</span><span class="now-playing-duration">0:00</span>
+        </div>
+        <div class="now-playing-controls">
+          <button class="now-playing-control now-playing-share" type="button" aria-label="Share track information">${icons.share}</button>
+          <button class="now-playing-control now-playing-previous" type="button" aria-label="Previous track">${icons.previous}</button>
+          <button class="now-playing-control now-playing-toggle" type="button" aria-label="${audio.paused ? 'Play' : 'Pause'}">${audio.paused ? icons.play : icons.pause}</button>
+          <button class="now-playing-control now-playing-next" type="button" aria-label="Next track">${icons.next}</button>
+          <button class="now-playing-control now-playing-repeat ${runtime.repeatOne ? 'active' : ''}" type="button" aria-label="${runtime.repeatOne ? 'Disable repeat track' : 'Repeat track'}" aria-pressed="${runtime.repeatOne}">${icons.repeat}</button>
         </div>
       </section>
     `);
 
     modalRoot.querySelector('.modal-backdrop')?.classList.add('now-playing-backdrop');
+    modalRoot.querySelector('.modal-sheet')?.classList.add('now-playing-sheet');
 
     modalRoot.querySelector('.now-playing-toggle')?.addEventListener('click', () => {
       togglePlayback();
       updateNowPlayingModal();
     });
     modalRoot.querySelector('.now-playing-share')?.addEventListener('click', shareCurrentTrack);
-    modalRoot.querySelector('.now-playing-waveform')?.addEventListener('pointerdown', (event) => {
-      seekFromPointer(event, event.currentTarget);
+    modalRoot.querySelector('.now-playing-previous')?.addEventListener('click', () => playNext(-1));
+    modalRoot.querySelector('.now-playing-next')?.addEventListener('click', () => playNext(1));
+    modalRoot.querySelector('.now-playing-repeat')?.addEventListener('click', () => {
+      runtime.repeatOne = !runtime.repeatOne;
       updateNowPlayingModal();
     });
     updateNowPlayingModal();
@@ -447,14 +472,22 @@
       toggle.setAttribute('aria-label', audio.paused ? 'Play' : 'Pause');
     }
 
+    const repeat = modal.querySelector('.now-playing-repeat');
+    if (repeat) {
+      repeat.classList.toggle('active', runtime.repeatOne);
+      repeat.setAttribute('aria-pressed', String(runtime.repeatOne));
+      repeat.setAttribute('aria-label', runtime.repeatOne ? 'Disable repeat track' : 'Repeat track');
+    }
+
     const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
     const ratio = duration ? Math.max(0, Math.min(1, audio.currentTime / duration)) : 0;
-    const bars = [...modal.querySelectorAll('.wave-bar')];
-    bars.forEach((bar, index) => bar.classList.toggle('played', index / bars.length <= ratio));
-    const waveformData = modal.querySelector('.waveform-data');
-    if (waveformData) waveformData.style.transform = `translate3d(-${ratio * 100}%, 0, 0)`;
     const waveform = modal.querySelector('.now-playing-waveform');
-    if (waveform) waveform.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
+    updateWaveformDom(waveform, ratio, duration);
+
+    const current = modal.querySelector('.now-playing-current');
+    const total = modal.querySelector('.now-playing-duration');
+    if (current) current.textContent = formatPlaybackTime(audio.currentTime);
+    if (total) total.textContent = formatPlaybackTime(duration);
   }
 
   function finishTransition() {
@@ -1044,12 +1077,76 @@
     await playTrack(runtime.activePlaylistId, runtime.queue[nextIndex]);
   }
 
+  function updateWaveformDom(element, ratio, duration) {
+    if (!element) return;
+    const safeRatio = Math.max(0, Math.min(1, Number(ratio) || 0));
+    const bars = [...element.querySelectorAll('.wave-bar')];
+    bars.forEach((bar, index) => bar.classList.toggle('played', index / Math.max(1, bars.length - 1) <= safeRatio));
+
+    const waveformData = element.querySelector('.waveform-data');
+    if (waveformData) waveformData.style.transform = `translate3d(-${safeRatio * 100}%, 0, 0)`;
+
+    element.setAttribute('aria-valuenow', String(Math.round(safeRatio * 100)));
+    const current = element.querySelector('.scrub-current');
+    const total = element.querySelector('.scrub-total');
+    const currentTime = duration > 0 ? safeRatio * duration : 0;
+    if (current) current.textContent = formatPlaybackTime(currentTime);
+    if (total) total.textContent = formatPlaybackTime(duration);
+  }
+
   function seekFromPointer(event, element) {
-    if (!Number.isFinite(audio.duration) || audio.duration <= 0) return;
+    if (!Number.isFinite(audio.duration) || audio.duration <= 0 || !element) return 0;
     const rect = element.getBoundingClientRect();
-    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+    const ratio = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
     audio.currentTime = ratio * audio.duration;
     updatePlayerDom();
+    updateNowPlayingModal();
+    return ratio;
+  }
+
+  function beginScrub(event) {
+    const element = event.target.closest('[data-scrubber]');
+    if (!element || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
+    if (event.button !== undefined && event.button !== 0) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const wasPlaying = !audio.paused;
+    runtime.scrub = {
+      pointerId: event.pointerId,
+      element,
+      wasPlaying,
+      surface: element.dataset.scrubber
+    };
+
+    document.body.classList.add('scrubbing');
+    element.classList.add('is-scrubbing');
+    app.querySelector('.player-dock')?.classList.add('is-scrubbing');
+    modalRoot.querySelector('.now-playing-modal')?.classList.add('is-scrubbing');
+    try { element.setPointerCapture(event.pointerId); } catch (_) { /* Older Safari can reject pointer capture. */ }
+    if (wasPlaying) audio.pause();
+    seekFromPointer(event, element);
+  }
+
+  function moveScrub(event) {
+    const scrub = runtime.scrub;
+    if (!scrub || scrub.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    seekFromPointer(event, scrub.element);
+  }
+
+  function endScrub(event) {
+    const scrub = runtime.scrub;
+    if (!scrub || scrub.pointerId !== event.pointerId) return;
+    seekFromPointer(event, scrub.element);
+    try { scrub.element.releasePointerCapture(event.pointerId); } catch (_) { /* Ignore unsupported capture release. */ }
+    scrub.element.classList.remove('is-scrubbing');
+    app.querySelector('.player-dock')?.classList.remove('is-scrubbing');
+    modalRoot.querySelector('.now-playing-modal')?.classList.remove('is-scrubbing');
+    document.body.classList.remove('scrubbing');
+    runtime.scrub = null;
+    runtime.suppressClickUntil = Date.now() + 180;
+    if (scrub.wasPlaying) audio.play().catch(() => undefined);
   }
 
   async function shareCurrentTrack() {
@@ -1162,13 +1259,13 @@
       case 'toggle-play': togglePlayback(); break;
       case 'open-now-playing': openNowPlayingModal(); break;
       case 'share-track': shareCurrentTrack(); break;
-      case 'seek': seekFromPointer(event, target); break;
       case 'close-modal': closeModal(); break;
       default: break;
     }
   }
 
   function beginNavigationSwipe(event) {
+    if (event.target.closest('[data-scrubber], .player-dock')) return;
     if (runtime.view !== 'playlist' || modalRoot.children.length || event.button !== undefined && event.button !== 0) return;
     const screen = app.querySelector('.playlist-screen');
     if (!screen) return;
@@ -1318,12 +1415,17 @@
   }
 
   app.addEventListener('click', handleAppClick);
+  app.addEventListener('pointerdown', beginScrub);
   app.addEventListener('pointerdown', beginNavigationSwipe);
   app.addEventListener('pointerdown', beginLongPress);
+  modalRoot.addEventListener('pointerdown', beginScrub);
+  window.addEventListener('pointermove', moveScrub, { passive: false });
   window.addEventListener('pointermove', moveNavigationSwipe, { passive: false });
   window.addEventListener('pointermove', moveLongPress, { passive: false });
+  window.addEventListener('pointerup', endScrub);
   window.addEventListener('pointerup', endNavigationSwipe);
   window.addEventListener('pointerup', endLongPress);
+  window.addEventListener('pointercancel', endScrub);
   window.addEventListener('pointercancel', endNavigationSwipe);
   window.addEventListener('pointercancel', endLongPress);
 
@@ -1340,7 +1442,14 @@
   audio.addEventListener('durationchange', () => { updatePlayerDom(); updateNowPlayingModal(); });
   audio.addEventListener('play', () => { updatePlayerDom(); updateNowPlayingModal(); updateMediaSession(); });
   audio.addEventListener('pause', () => { updatePlayerDom(); updateNowPlayingModal(); updateMediaSession(); });
-  audio.addEventListener('ended', () => playNext(1));
+  audio.addEventListener('ended', () => {
+    if (runtime.repeatOne) {
+      audio.currentTime = 0;
+      audio.play().catch(() => undefined);
+      return;
+    }
+    playNext(1);
+  });
   audio.addEventListener('error', () => showToast('This audio format could not be played.', true));
 
 
