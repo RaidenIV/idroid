@@ -215,49 +215,6 @@ function contentTypeFor(track) {
   return types[extension] || 'application/octet-stream';
 }
 
-function basicAuth(req, res, next) {
-  const expectedUser = process.env.APP_USERNAME;
-  const expectedPassword = process.env.APP_PASSWORD;
-  if (!expectedUser && !expectedPassword) return next();
-  if (!expectedUser || !expectedPassword) {
-    return res.status(503).send('Set both APP_USERNAME and APP_PASSWORD, or remove both variables.');
-  }
-
-  const header = req.headers.authorization || '';
-  const [scheme, encoded] = header.split(' ');
-  if (scheme !== 'Basic' || !encoded) {
-    res.set('WWW-Authenticate', 'Basic realm="iDroid", charset="UTF-8"');
-    return res.status(401).send('Authentication required.');
-  }
-
-  let suppliedUser = '';
-  let suppliedPassword = '';
-  try {
-    const credentials = Buffer.from(encoded, 'base64').toString('utf8');
-    const separator = credentials.indexOf(':');
-    suppliedUser = separator >= 0 ? credentials.slice(0, separator) : credentials;
-    suppliedPassword = separator >= 0 ? credentials.slice(separator + 1) : '';
-  } catch (_) {
-    res.set('WWW-Authenticate', 'Basic realm="iDroid", charset="UTF-8"');
-    return res.status(401).send('Authentication required.');
-  }
-
-  const suppliedUserBuffer = Buffer.from(suppliedUser);
-  const expectedUserBuffer = Buffer.from(expectedUser);
-  const suppliedPasswordBuffer = Buffer.from(suppliedPassword);
-  const expectedPasswordBuffer = Buffer.from(expectedPassword);
-  const userMatches = suppliedUserBuffer.length === expectedUserBuffer.length
-    && crypto.timingSafeEqual(suppliedUserBuffer, expectedUserBuffer);
-  const passwordMatches = suppliedPasswordBuffer.length === expectedPasswordBuffer.length
-    && crypto.timingSafeEqual(suppliedPasswordBuffer, expectedPasswordBuffer);
-
-  if (!userMatches || !passwordMatches) {
-    res.set('WWW-Authenticate', 'Basic realm="iDroid", charset="UTF-8"');
-    return res.status(401).send('Authentication required.');
-  }
-  next();
-}
-
 const upload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, callback) => callback(null, TEMP_DIR),
@@ -286,14 +243,17 @@ const upload = multer({
 app.disable('x-powered-by');
 app.use(express.json({ limit: '50mb' }));
 app.get('/api/health', (_req, res) => res.status(200).json({ ok: true }));
-app.use(basicAuth);
 
 const publicFiles = new Set([
   '/styles.css',
   '/app.js',
   '/sw.js',
   '/manifest.webmanifest',
-  '/music.png'
+  '/music.png',
+  '/user.svg',
+  '/add.svg',
+  '/down.svg',
+  '/delete.svg'
 ]);
 app.get([...publicFiles], (req, res) => {
   res.sendFile(path.join(ROOT_DIR, path.basename(req.path)));
@@ -405,16 +365,26 @@ app.get('/api/tracks/:trackId/audio', async (req, res, next) => {
     const total = file.size;
     const range = req.headers.range;
 
+    const etag = `"${match.track.contentHash || `${file.size}-${Math.floor(file.mtimeMs)}`}"`;
     res.set({
       'Accept-Ranges': 'bytes',
       'Content-Type': contentTypeFor(match.track),
-      'Cache-Control': 'private, max-age=3600',
-      'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(match.track.fileName || 'audio')}`
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(match.track.fileName || 'audio')}`,
+      'ETag': etag,
+      'Last-Modified': file.mtime.toUTCString(),
+      'Cross-Origin-Resource-Policy': 'same-origin'
     });
+
+    if (req.headers['if-none-match'] === etag && !range) {
+      res.status(304).end();
+      return;
+    }
 
     if (!range) {
       res.status(200).set('Content-Length', total);
-      fs.createReadStream(filePath).on('error', next).pipe(res);
+      res.flushHeaders();
+      fs.createReadStream(filePath, { highWaterMark: 256 * 1024 }).on('error', next).pipe(res);
       return;
     }
 
@@ -443,7 +413,8 @@ app.get('/api/tracks/:trackId/audio', async (req, res, next) => {
       'Content-Range': `bytes ${start}-${end}/${total}`,
       'Content-Length': chunkSize
     });
-    fs.createReadStream(filePath, { start, end }).on('error', next).pipe(res);
+    res.flushHeaders();
+    fs.createReadStream(filePath, { start, end, highWaterMark: 256 * 1024 }).on('error', next).pipe(res);
   } catch (error) {
     if (error.code === 'ENOENT') return res.status(404).end();
     next(error);

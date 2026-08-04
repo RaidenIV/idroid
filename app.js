@@ -9,10 +9,10 @@
 
   const icons = {
     search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>',
-    user: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4"></circle><path d="M4.5 21a7.5 7.5 0 0 1 15 0"></path></svg>',
+    user: '<img class="asset-icon" src="./user.svg" alt="">',
     bell: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></svg>',
     back: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>',
-    plus: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"></path></svg>',
+    plus: '<img class="asset-icon" src="./add.svg" alt="">',
     play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"></path></svg>',
     pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"></path></svg>',
     kebab: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg>',
@@ -22,6 +22,8 @@
     share: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3"></path><path d="m7 8 5-5 5 5"></path><path d="M5 12v8h14v-8"></path></svg>',
     pencil: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z"></path><path d="m14 7 3 3"></path></svg>',
     trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14"></path></svg>',
+    delete: '<span class="masked-icon delete-icon" aria-hidden="true"></span>',
+    dateDown: '<span class="track-date-icon" aria-hidden="true"><span></span></span>',
     image: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"></rect><circle cx="9" cy="10" r="2"></circle><path d="m21 15-5-5L5 20"></path></svg>',
     close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"></path></svg>'
   };
@@ -45,6 +47,9 @@
     pickerPlaylistId: null,
     suppressClickUntil: 0,
     drag: null,
+    navSwipe: null,
+    transition: null,
+    warmedTracks: new Set(),
     uploadToast: null
   };
 
@@ -183,7 +188,7 @@
   function formatDate(dateValue) {
     const date = new Date(dateValue);
     if (Number.isNaN(date.getTime())) return '';
-    return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date);
+    return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
   }
 
   function formatJoined(dateValue) {
@@ -234,14 +239,14 @@
     `).join('');
 
     return `
-      <main class="screen home-screen">
-        <header class="topbar">
-          <h1 class="topbar-title">iDroid</h1>
-          <div class="topbar-actions">
-            <button class="icon-button" type="button" data-action="search" aria-label="Search">${icons.search}</button>
-            <button class="icon-button" type="button" data-action="open-user" aria-label="User settings">${icons.user}</button>
-          </div>
-        </header>
+      <header class="topbar home-menu-bar">
+        <h1 class="topbar-title">iDroid</h1>
+        <div class="topbar-actions">
+          <button class="icon-button" type="button" data-action="search" aria-label="Search">${icons.search}</button>
+          <button class="icon-button" type="button" data-action="open-user" aria-label="User settings">${icons.user}</button>
+        </div>
+      </header>
+      <main class="screen home-screen ${runtime.transition === 'back' ? 'screen-enter-back' : ''}">
         ${playlists ? `<section class="playlist-grid" aria-label="Playlists">${playlists}</section>` : `
           <section class="home-empty"><div><strong>No playlists yet</strong>Tap Add to create your first playlist.</div></section>`}
       </main>
@@ -262,12 +267,12 @@
     const rows = playlist.tracks.map((track, index) => {
       const available = Boolean(track.storageName);
       return `
-        <li class="track-row ${available ? '' : 'unavailable'}" data-track-id="${track.id}" data-playlist-id="${playlist.id}">
+        <li class="track-row ${available ? '' : 'unavailable'} ${runtime.activeTrackId === track.id ? 'active-track' : ''}" data-track-id="${track.id}" data-playlist-id="${playlist.id}">
           <div class="track-index">${index + 1}</div>
-          <button class="track-main" type="button" data-action="play-track" data-playlist-id="${playlist.id}" data-track-id="${track.id}" style="border:0;background:transparent;color:inherit;text-align:left;padding:0;">
+          <button class="track-main" type="button" data-action="play-track" data-playlist-id="${playlist.id}" data-track-id="${track.id}">
             <div class="track-title">${escapeHtml(track.title)}</div>
             <div class="track-detail">
-              ${available ? icons.local : icons.linkOff}
+              ${available ? icons.dateDown : icons.linkOff}
               <span>${available ? `${formatDate(track.addedAt)} · ${formatDuration(track.duration)}` : 'Audio file unavailable'}</span>
             </div>
           </button>
@@ -277,12 +282,12 @@
     }).join('');
 
     return `
-      <main class="screen playlist-screen">
+      <main class="screen playlist-screen ${runtime.transition === 'forward' ? 'screen-enter-forward' : ''}">
         <header class="topbar">
           <button class="icon-button" type="button" data-action="back-home" aria-label="Back">${icons.back}</button>
           <div class="topbar-actions">
             <button class="icon-button" type="button" data-action="search" aria-label="Search">${icons.search}</button>
-            <button class="icon-button" type="button" data-action="edit-playlist" data-playlist-id="${playlist.id}" aria-label="Edit playlist">${icons.kebab}</button>
+            <button class="icon-button kebab-button" type="button" data-action="edit-playlist" data-playlist-id="${playlist.id}" aria-label="Edit playlist">${icons.kebab}</button>
           </div>
         </header>
 
@@ -348,7 +353,7 @@
     return `
       <aside class="player-dock ${track ? 'visible' : ''}" aria-label="Now playing">
         <button class="player-toggle" type="button" data-action="toggle-play" aria-label="${audio.paused ? 'Play' : 'Pause'}">${audio.paused ? icons.play : icons.pause}</button>
-        <button class="player-text" type="button" data-action="open-current-playlist" style="border:0;background:transparent;color:inherit;text-align:left;padding:0;">
+        <button class="player-text" type="button" data-action="open-now-playing">
           <div class="player-track">${track ? escapeHtml(track.title) : 'Nothing playing'}</div>
           <div class="player-context">${track && playlist ? `${escapeHtml(playlist.name)} · ${escapeHtml(state.profile.name)}` : ''}</div>
         </button>
@@ -379,23 +384,108 @@
     if (waveform) waveform.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
   }
 
-  function goHome() {
+  function nowPlayingWaveformMarkup() {
+    return Array.from({ length: 39 }, (_, index) => {
+      const height = 18 + ((index * 17 + 13) % 34);
+      return `<span class="wave-bar" style="height:${height}px"></span>`;
+    }).join('');
+  }
+
+  function openNowPlayingModal() {
+    const playlist = getPlaylist(runtime.activePlaylistId);
+    const track = getTrack(runtime.activePlaylistId, runtime.activeTrackId);
+    if (!playlist || !track) return;
+
+    openModal(`
+      <section class="now-playing-modal" aria-label="Now playing">
+        <div class="now-playing-cover">${coverMarkup(playlist)}</div>
+        <div class="now-playing-copy">
+          <h2 class="now-playing-title">${escapeHtml(track.title)}</h2>
+          <p class="now-playing-context">${escapeHtml(playlist.name)} · ${escapeHtml(state.profile.name)}</p>
+        </div>
+        <div class="now-playing-controls">
+          <button class="now-playing-toggle" type="button" aria-label="${audio.paused ? 'Play' : 'Pause'}">${audio.paused ? icons.play : icons.pause}</button>
+          <div class="now-playing-waveform" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            ${nowPlayingWaveformMarkup()}<span class="wave-progress" style="left:0%"></span>
+          </div>
+          <button class="now-playing-share" type="button" aria-label="Share track information">${icons.share}</button>
+        </div>
+      </section>
+    `);
+
+    modalRoot.querySelector('.now-playing-toggle')?.addEventListener('click', () => {
+      togglePlayback();
+      updateNowPlayingModal();
+    });
+    modalRoot.querySelector('.now-playing-share')?.addEventListener('click', shareCurrentTrack);
+    modalRoot.querySelector('.now-playing-waveform')?.addEventListener('pointerdown', (event) => {
+      seekFromPointer(event, event.currentTarget);
+      updateNowPlayingModal();
+    });
+    updateNowPlayingModal();
+  }
+
+  function updateNowPlayingModal() {
+    const modal = modalRoot.querySelector('.now-playing-modal');
+    if (!modal) return;
+    const playlist = getPlaylist(runtime.activePlaylistId);
+    const track = getTrack(runtime.activePlaylistId, runtime.activeTrackId);
+    if (!playlist || !track) {
+      closeModal();
+      return;
+    }
+
+    const title = modal.querySelector('.now-playing-title');
+    const context = modal.querySelector('.now-playing-context');
+    if (title) title.textContent = track.title;
+    if (context) context.textContent = `${playlist.name} · ${state.profile.name}`;
+
+    const toggle = modal.querySelector('.now-playing-toggle');
+    if (toggle) {
+      toggle.innerHTML = audio.paused ? icons.play : icons.pause;
+      toggle.setAttribute('aria-label', audio.paused ? 'Play' : 'Pause');
+    }
+
+    const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+    const ratio = duration ? Math.max(0, Math.min(1, audio.currentTime / duration)) : 0;
+    const bars = [...modal.querySelectorAll('.wave-bar')];
+    bars.forEach((bar, index) => bar.classList.toggle('played', index / bars.length <= ratio));
+    const progress = modal.querySelector('.wave-progress');
+    if (progress) progress.style.left = `${ratio * 100}%`;
+    const waveform = modal.querySelector('.now-playing-waveform');
+    if (waveform) waveform.setAttribute('aria-valuenow', String(Math.round(ratio * 100)));
+  }
+
+  function finishTransition() {
+    requestAnimationFrame(() => {
+      runtime.transition = null;
+    });
+  }
+
+  function goHome(transition = runtime.view === 'playlist' ? 'back' : null) {
+    runtime.transition = transition;
     runtime.view = 'home';
     runtime.playlistId = null;
     closeOverlays();
     render();
+    finishTransition();
+    window.scrollTo({ top: 0, behavior: transition ? 'auto' : 'smooth' });
   }
 
   function openPlaylist(id) {
     if (!getPlaylist(id)) return;
+    runtime.transition = runtime.view === 'home' ? 'forward' : null;
     runtime.view = 'playlist';
     runtime.playlistId = id;
     closeOverlays();
     render();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    finishTransition();
+    window.scrollTo({ top: 0, behavior: 'auto' });
+    warmPlaylistStart(id);
   }
 
   function openUser() {
+    runtime.transition = null;
     runtime.view = 'user';
     runtime.playlistId = null;
     closeOverlays();
@@ -626,7 +716,7 @@
   function openTrackMenu(anchor, playlistId, trackId) {
     openMenu(anchor, [{
       label: 'Remove from Playlist',
-      icon: icons.trash,
+      icon: icons.delete,
       danger: true,
       action: () => removeTrack(playlistId, trackId)
     }]);
@@ -854,6 +944,27 @@
     }
   }
 
+  function trackStreamUrl(track) {
+    const version = encodeURIComponent(track.contentHash || track.storageName || track.id);
+    return `/api/tracks/${encodeURIComponent(track.id)}/audio?v=${version}`;
+  }
+
+  function warmTrack(track) {
+    if (!track?.storageName || runtime.warmedTracks.has(track.id)) return;
+    runtime.warmedTracks.add(track.id);
+    fetch(trackStreamUrl(track), {
+      headers: { Range: 'bytes=0-262143' },
+      cache: 'force-cache'
+    }).catch(() => {
+      runtime.warmedTracks.delete(track.id);
+    });
+  }
+
+  function warmPlaylistStart(playlistId) {
+    const firstTrack = getPlaylist(playlistId)?.tracks.find((track) => track.storageName);
+    if (firstTrack) warmTrack(firstTrack);
+  }
+
   async function playPlaylist(playlistId) {
     const playlist = getPlaylist(playlistId);
     if (!playlist) return;
@@ -875,26 +986,35 @@
       return;
     }
 
+    if (runtime.activeTrackId === trackId && audio.dataset.trackId === trackId) {
+      openNowPlayingModal();
+      return;
+    }
+
     runtime.activePlaylistId = playlistId;
     runtime.activeTrackId = trackId;
     runtime.queue = playlist.tracks.filter((item) => item.storageName).map((item) => item.id);
     runtime.queueIndex = runtime.queue.indexOf(trackId);
 
-    const streamUrl = `/api/tracks/${encodeURIComponent(trackId)}/audio`;
     if (audio.dataset.trackId !== trackId) {
-      audio.src = streamUrl;
+      audio.preload = 'auto';
+      audio.src = trackStreamUrl(track);
       audio.dataset.trackId = trackId;
       audio.load();
     }
+
+    const playPromise = audio.play();
     render();
     updateMediaSession();
+    warmTrack(playlist.tracks.find((item) => item.id === runtime.queue[runtime.queueIndex + 1]));
     try {
-      await audio.play();
+      await playPromise;
     } catch (error) {
       console.warn('Playback did not start.', error);
       showToast('Tap play to start audio.', true);
     }
     updatePlayerDom();
+    updateNowPlayingModal();
   }
 
   function togglePlayback() {
@@ -912,6 +1032,7 @@
     runtime.activeTrackId = null;
     runtime.queue = [];
     runtime.queueIndex = -1;
+    if (modalRoot.querySelector('.now-playing-modal')) closeModal();
     render();
   }
 
@@ -1038,7 +1159,7 @@
       case 'edit-profile': openProfileEditor(); break;
       case 'user-menu': openUserMenu(target); break;
       case 'toggle-play': togglePlayback(); break;
-      case 'open-current-playlist': if (runtime.activePlaylistId) openPlaylist(runtime.activePlaylistId); break;
+      case 'open-now-playing': openNowPlayingModal(); break;
       case 'share-track': shareCurrentTrack(); break;
       case 'seek': seekFromPointer(event, target); break;
       case 'close-modal': closeModal(); break;
@@ -1046,8 +1167,79 @@
     }
   }
 
+  function beginNavigationSwipe(event) {
+    if (runtime.view !== 'playlist' || modalRoot.children.length || event.button !== undefined && event.button !== 0) return;
+    const screen = app.querySelector('.playlist-screen');
+    if (!screen) return;
+    runtime.navSwipe = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      lastX: event.clientX,
+      startedAt: performance.now(),
+      active: false,
+      screen
+    };
+  }
+
+  function moveNavigationSwipe(event) {
+    const swipe = runtime.navSwipe;
+    if (!swipe || swipe.pointerId !== event.pointerId) return;
+    const dx = event.clientX - swipe.startX;
+    const dy = event.clientY - swipe.startY;
+    swipe.lastX = event.clientX;
+
+    if (!swipe.active) {
+      if (Math.abs(dy) > 18 && Math.abs(dy) > Math.abs(dx)) {
+        runtime.navSwipe = null;
+        return;
+      }
+      if (dx <= 10 || Math.abs(dx) < Math.abs(dy) * 1.2) return;
+      swipe.active = true;
+      if (runtime.drag?.timer) clearTimeout(runtime.drag.timer);
+      runtime.drag = null;
+      swipe.screen.classList.add('screen-swiping');
+    }
+
+    event.preventDefault();
+    const distance = Math.max(0, Math.min(window.innerWidth, dx));
+    swipe.screen.style.transform = `translate3d(${distance}px, 0, 0)`;
+    swipe.screen.style.opacity = String(1 - Math.min(.35, distance / window.innerWidth * .35));
+  }
+
+  function endNavigationSwipe(event) {
+    const swipe = runtime.navSwipe;
+    if (!swipe || swipe.pointerId !== event.pointerId) return;
+    runtime.navSwipe = null;
+    if (!swipe.active) return;
+
+    const dx = Math.max(0, swipe.lastX - swipe.startX);
+    const elapsed = Math.max(1, performance.now() - swipe.startedAt);
+    const velocity = dx / elapsed;
+    const shouldClose = dx > Math.min(110, window.innerWidth * .24) || velocity > .55;
+
+    swipe.screen.style.transition = 'transform .24s cubic-bezier(.2,.8,.2,1), opacity .24s ease';
+    swipe.screen.style.transform = shouldClose ? 'translate3d(100vw, 0, 0)' : 'translate3d(0, 0, 0)';
+    swipe.screen.style.opacity = shouldClose ? '0.65' : '1';
+
+    const complete = () => {
+      swipe.screen.removeEventListener('transitionend', complete);
+      if (shouldClose) goHome(null);
+      else {
+        swipe.screen.classList.remove('screen-swiping');
+        swipe.screen.style.removeProperty('transition');
+        swipe.screen.style.removeProperty('transform');
+        swipe.screen.style.removeProperty('opacity');
+      }
+    };
+    swipe.screen.addEventListener('transitionend', complete);
+    setTimeout(complete, 320);
+  }
+
   function beginLongPress(event) {
     if (event.button !== undefined && event.button !== 0) return;
+    const touchedTrack = event.target.closest('.track-row');
+    if (touchedTrack) warmTrack(getTrack(touchedTrack.dataset.playlistId, touchedTrack.dataset.trackId));
     if (event.target.closest('.playlist-play, .kebab, .track-main, button:not(.playlist-cover)')) return;
 
     const cover = event.target.closest('.playlist-cover');
@@ -1125,9 +1317,13 @@
   }
 
   app.addEventListener('click', handleAppClick);
+  app.addEventListener('pointerdown', beginNavigationSwipe);
   app.addEventListener('pointerdown', beginLongPress);
+  window.addEventListener('pointermove', moveNavigationSwipe, { passive: false });
   window.addEventListener('pointermove', moveLongPress, { passive: false });
+  window.addEventListener('pointerup', endNavigationSwipe);
   window.addEventListener('pointerup', endLongPress);
+  window.addEventListener('pointercancel', endNavigationSwipe);
   window.addEventListener('pointercancel', endLongPress);
 
   modalRoot.addEventListener('click', (event) => {
@@ -1139,10 +1335,10 @@
     runtime.pickerPlaylistId = null;
   });
 
-  audio.addEventListener('timeupdate', updatePlayerDom);
-  audio.addEventListener('durationchange', updatePlayerDom);
-  audio.addEventListener('play', () => { updatePlayerDom(); updateMediaSession(); });
-  audio.addEventListener('pause', () => { updatePlayerDom(); updateMediaSession(); });
+  audio.addEventListener('timeupdate', () => { updatePlayerDom(); updateNowPlayingModal(); });
+  audio.addEventListener('durationchange', () => { updatePlayerDom(); updateNowPlayingModal(); });
+  audio.addEventListener('play', () => { updatePlayerDom(); updateNowPlayingModal(); updateMediaSession(); });
+  audio.addEventListener('pause', () => { updatePlayerDom(); updateNowPlayingModal(); updateMediaSession(); });
   audio.addEventListener('ended', () => playNext(1));
   audio.addEventListener('error', () => showToast('This audio format could not be played.', true));
 

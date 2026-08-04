@@ -23,7 +23,6 @@ The app does not require MongoDB or another database. A single `state.json` file
 - Playlist and song drag reordering.
 - Automatic duplicate detection within a playlist.
 - Removal of unreferenced audio when a track, playlist, or account is deleted.
-- Optional HTTP Basic Authentication for a private personal deployment.
 - PWA installation with `music.png` as the favicon and iOS icon.
 
 ## Railway deployment
@@ -42,16 +41,14 @@ The app does not require MongoDB or another database. A single `state.json` file
 
    ```text
    STORAGE_DIR=/data
-   APP_USERNAME=your-private-user-name
-   APP_PASSWORD=use-a-long-unique-password
    MAX_FILE_SIZE_MB=1024
    ```
 
-   `APP_USERNAME` and `APP_PASSWORD` are optional only if the Railway URL will be protected another way. When both are set, the browser displays its standard sign-in prompt before loading iDroid.
-
-7. Generate a public Railway domain from the service networking settings.
+7. Generate a Railway domain from the service networking settings.
 8. Keep the service at one replica because the attached volume belongs to that service instance.
-9. Open the Railway URL in Safari, sign in, tap **Share**, and choose **Add to Home Screen**.
+9. Open the Railway URL in Safari, tap **Share**, and choose **Add to Home Screen**.
+
+This version does not include a login prompt. Anyone with the Railway URL can access the library, so keep the URL private or add access control at the platform/network layer later.
 
 The service includes `/api/health`, and `railway.toml` configures it as the Railway health check.
 
