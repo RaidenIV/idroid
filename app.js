@@ -321,7 +321,7 @@
     `).join('');
 
     return `
-      <header class="topbar home-menu-bar">
+      <header class="topbar home-menu-bar ${runtime.transition === 'back' ? 'page-enter-back' : ''}">
         <h1 class="topbar-title">iDroid</h1>
         <div class="topbar-actions">
           <button class="icon-button" type="button" data-action="search" aria-label="Search">${icons.search}</button>
@@ -332,7 +332,7 @@
         ${playlists ? `<section class="playlist-grid" aria-label="Playlists">${playlists}</section>` : `
           <section class="home-empty"><div><strong>No playlists yet</strong>Tap Add to create your first playlist.</div></section>`}
       </main>
-      <button class="home-add" type="button" data-action="new-playlist" aria-label="Add playlist">
+      <button class="home-add ${runtime.transition === 'back' ? 'page-enter-back' : ''}" type="button" data-action="new-playlist" aria-label="Add playlist">
         ${icons.plus}<span class="home-add-label">Add</span>
       </button>
     `;
@@ -364,7 +364,7 @@
     }).join('');
 
     return `
-      <header class="topbar playlist-menu-bar">
+      <header class="topbar playlist-menu-bar ${runtime.transition === 'forward' ? 'page-enter-forward' : ''}">
         <button class="icon-button" type="button" data-action="back-home" aria-label="Back">${icons.back}</button>
         <div class="topbar-actions">
           <button class="icon-button" type="button" data-action="search" aria-label="Search">${icons.search}</button>
@@ -401,8 +401,8 @@
   function renderUserScreen() {
     const avatar = state.profile.avatar ? `<img src="${state.profile.avatar}" alt="">` : '';
     return `
-      <main class="screen user-screen">
-        <header class="topbar">
+      <main class="screen user-screen ${runtime.transition === 'forward' ? 'screen-enter-forward' : runtime.transition === 'back' ? 'screen-enter-back' : ''}">
+        <header class="topbar ${runtime.transition === 'forward' ? 'page-enter-forward' : runtime.transition === 'back' ? 'page-enter-back' : ''}">
           <button class="icon-button" type="button" data-action="back-home" aria-label="Back">${icons.back}</button>
           <button class="icon-button" type="button" data-action="user-menu" aria-label="Account options">${icons.kebab}</button>
         </header>
@@ -443,7 +443,7 @@
           <span class="scrub-line" aria-hidden="true"></span>
           <div class="scrub-readout" aria-hidden="true"><span class="scrub-current">0:00</span><span class="scrub-divider">/</span><span class="scrub-total">0:00</span></div>
         </div>
-        <button class="player-share" type="button" data-action="share-track" aria-label="Share track information">${icons.share}</button>
+        ${runtime.view === 'home' ? '' : `<button class="player-share" type="button" data-action="share-track" aria-label="Share track information">${icons.share}</button>`}
       </aside>
     `;
   }
@@ -502,8 +502,14 @@
       </section>
     `);
 
-    modalRoot.querySelector('.modal-backdrop')?.classList.add('now-playing-backdrop');
-    modalRoot.querySelector('.modal-sheet')?.classList.add('now-playing-sheet');
+    const nowPlayingBackdrop = modalRoot.querySelector('.modal-backdrop');
+    const nowPlayingSheet = modalRoot.querySelector('.modal-sheet');
+    nowPlayingBackdrop?.classList.add('now-playing-backdrop');
+    nowPlayingSheet?.classList.add('now-playing-sheet');
+    requestAnimationFrame(() => {
+      nowPlayingBackdrop?.classList.add('is-expanded');
+      nowPlayingSheet?.classList.add('is-expanded');
+    });
 
     modalRoot.querySelector('.now-playing-toggle')?.addEventListener('click', () => {
       togglePlayback();
@@ -566,35 +572,91 @@
     });
   }
 
-  function goHome(transition = runtime.view === 'playlist' ? 'back' : null) {
-    runtime.transition = transition;
-    runtime.view = 'home';
-    runtime.playlistId = null;
-    closeOverlays();
-    render();
-    finishTransition();
-    window.scrollTo({ top: 0, behavior: transition ? 'auto' : 'smooth' });
+  function pageTransitionNodes() {
+    return Array.from(app.children).filter((node) =>
+      node.matches?.('.topbar, .screen, .home-add')
+    );
+  }
+
+  async function animateCurrentPageOut(direction) {
+    if (!direction || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    const offset = direction === 'forward' ? '-36px' : '36px';
+    const animations = pageTransitionNodes().map((node, index) => {
+      const computedTransform = getComputedStyle(node).transform;
+      const baseTransform = computedTransform === 'none' ? '' : computedTransform;
+      const animation = node.animate([
+        {
+          opacity: 1,
+          transform: baseTransform || 'translate3d(0, 0, 0)',
+          filter: 'blur(0)'
+        },
+        {
+          opacity: 0.18,
+          transform: `${baseTransform} translate3d(${offset}, 0, 0)`.trim(),
+          filter: 'blur(1.5px)'
+        }
+      ], {
+        duration: 180 + index * 12,
+        easing: 'cubic-bezier(.4, 0, .8, .35)',
+        fill: 'forwards'
+      });
+      return animation.finished.catch(() => undefined);
+    });
+    await Promise.all(animations);
+  }
+
+  async function changePage(direction, updateView, scrollBehavior = 'auto') {
+    const applyUpdate = () => {
+      runtime.transition = direction;
+      updateView();
+      closeOverlays();
+      render();
+      finishTransition();
+      window.scrollTo({ top: 0, behavior: scrollBehavior });
+    };
+
+    if (!direction) {
+      applyUpdate();
+      return;
+    }
+
+    if (typeof document.startViewTransition === 'function' &&
+        !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      try {
+        const transition = document.startViewTransition(applyUpdate);
+        await transition.finished;
+        return;
+      } catch (_) {
+        // Fall through to the Web Animations API transition.
+      }
+    }
+
+    await animateCurrentPageOut(direction);
+    applyUpdate();
+  }
+
+  function goHome(transition = runtime.view !== 'home' ? 'back' : null) {
+    void changePage(transition, () => {
+      runtime.view = 'home';
+      runtime.playlistId = null;
+    }, transition ? 'auto' : 'smooth');
   }
 
   function openPlaylist(id) {
     if (!getPlaylist(id)) return;
-    runtime.transition = runtime.view === 'home' ? 'forward' : null;
-    runtime.view = 'playlist';
-    runtime.playlistId = id;
-    closeOverlays();
-    render();
-    finishTransition();
-    window.scrollTo({ top: 0, behavior: 'auto' });
-    warmPlaylistStart(id);
+    const direction = runtime.view === 'home' ? 'forward' : null;
+    void changePage(direction, () => {
+      runtime.view = 'playlist';
+      runtime.playlistId = id;
+    }, 'auto').then(() => warmPlaylistStart(id));
   }
 
   function openUser() {
-    runtime.transition = null;
-    runtime.view = 'user';
-    runtime.playlistId = null;
-    closeOverlays();
-    render();
-    window.scrollTo({ top: 0, behavior: 'smooth' });
+    const direction = runtime.view === 'home' ? 'forward' : null;
+    void changePage(direction, () => {
+      runtime.view = 'user';
+      runtime.playlistId = null;
+    }, 'auto');
   }
 
   function closeOverlays() {
