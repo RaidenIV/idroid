@@ -1,14 +1,11 @@
-const CACHE_NAME = 'idroid-shell-v1';
+const CACHE_NAME = 'idroid-shell-v2';
 const APP_SHELL = [
   './',
   './index.html',
   './styles.css',
   './app.js',
   './manifest.webmanifest',
-  './assets/icon-32.png',
-  './assets/icon-192.png',
-  './assets/icon-512.png',
-  './assets/apple-touch-icon.png'
+  './music.png'
 ];
 
 self.addEventListener('install', (event) => {

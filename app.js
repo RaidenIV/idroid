@@ -254,7 +254,7 @@
             </div>
             <button class="big-play" type="button" data-action="play-playlist" data-playlist-id="${playlist.id}" aria-label="Play playlist">${icons.play}</button>
           </div>
-          <button class="add-tracks" type="button" data-action="add-tracks" data-playlist-id="${playlist.id}">${icons.plus}<span>Add tracks</span></button>
+          <label class="add-tracks" for="trackPicker" data-action="prepare-track-picker" data-playlist-id="${playlist.id}" role="button" tabindex="0">${icons.plus}<span>Add tracks</span></label>
         </section>
 
         ${rows ? `<ol class="track-list" aria-label="Tracks">${rows}</ol>` : `
@@ -689,60 +689,106 @@
     drawResults();
   }
 
-  function openTrackPicker(playlistId, pendingTrackId = null) {
+  function prepareTrackPicker(playlistId, pendingTrackId = null) {
+    if (!getPlaylist(playlistId)) return false;
     runtime.pickerPlaylistId = playlistId;
     runtime.pendingPlayTrackId = pendingTrackId;
     trackPicker.value = '';
-    trackPicker.click();
+    return true;
   }
 
-  async function handleTrackFiles(files) {
+  function openTrackPickerPrompt(playlistId, pendingTrackId = null) {
+    if (!prepareTrackPicker(playlistId, pendingTrackId)) return;
+    openModal(`
+      <div data-track-picker-prompt>
+        <h2 class="modal-title">Choose Music Files</h2>
+        <p class="modal-copy">Select audio saved in the Files app. The files stay on your device and are not uploaded.</p>
+        <div class="modal-actions">
+          <button class="action-button" type="button" data-file-picker-cancel>Cancel</button>
+          <label class="action-button primary" for="trackPicker" style="display:flex;align-items:center;justify-content:center;">Choose Files</label>
+        </div>
+      </div>
+    `, true);
+    modalRoot.querySelector('[data-file-picker-cancel]')?.addEventListener('click', () => {
+      runtime.pickerPlaylistId = null;
+      runtime.pendingPlayTrackId = null;
+      closeModal();
+    });
+  }
+
+  function isSupportedAudioFile(file) {
+    if (file.type?.startsWith('audio/')) return true;
+    return /\.(mp3|m4a|aac|wav|aiff|aif|flac|ogg|oga|opus|caf|mp4|m4b)$/i.test(file.name);
+  }
+
+  function handleTrackFiles(files) {
     const playlist = getPlaylist(runtime.pickerPlaylistId);
+    const supportedFiles = files.filter(isSupportedAudioFile);
+    const pendingTrackId = runtime.pendingPlayTrackId;
+
+    trackPicker.value = '';
+    runtime.pickerPlaylistId = null;
+    runtime.pendingPlayTrackId = null;
+
     if (!playlist || !files.length) return;
+    if (!supportedFiles.length) {
+      showToast('No supported audio files were selected.', true);
+      return;
+    }
+
+    if (modalRoot.querySelector('[data-track-picker-prompt]')) closeModal();
+
     let added = 0;
     let relinked = 0;
+    const durationJobs = [];
 
-    for (const file of files) {
-      if (!file.type.startsWith('audio/') && !/\.(mp3|m4a|aac|wav|aiff|aif|flac|ogg|opus)$/i.test(file.name)) continue;
+    for (const file of supportedFiles) {
       const print = fingerprint(file);
-      let track = playlist.tracks.find((item) => item.fingerprint === print && !runtime.objectUrls.has(item.id));
+      let track = playlist.tracks.find((item) => item.fingerprint === print);
+
       if (track) {
         attachFile(track.id, file);
         relinked += 1;
-      } else {
-        const duration = await readDuration(file);
-        track = {
-          id: createId('track'),
-          title: stripExtension(file.name),
-          fileName: file.name,
-          fingerprint: print,
-          size: file.size,
-          lastModified: file.lastModified,
-          type: file.type,
-          duration,
-          addedAt: new Date().toISOString()
-        };
-        playlist.tracks.push(track);
-        attachFile(track.id, file);
-        added += 1;
+        if (!track.duration) durationJobs.push({ track, file });
+        continue;
       }
+
+      track = {
+        id: createId('track'),
+        title: stripExtension(file.name),
+        fileName: file.name,
+        fingerprint: print,
+        size: file.size,
+        lastModified: file.lastModified,
+        type: file.type,
+        duration: 0,
+        addedAt: new Date().toISOString()
+      };
+      playlist.tracks.push(track);
+      attachFile(track.id, file);
+      durationJobs.push({ track, file });
+      added += 1;
     }
 
     saveState();
     render();
-    if (added || relinked) {
-      const parts = [];
-      if (added) parts.push(`${added} added`);
-      if (relinked) parts.push(`${relinked} relinked`);
-      showToast(parts.join(' · '));
-    } else {
-      showToast('No supported audio files were selected.', true);
+
+    const parts = [];
+    if (added) parts.push(`${added} added`);
+    if (relinked) parts.push(`${relinked} relinked`);
+    showToast(parts.join(' · '));
+
+    if (pendingTrackId && runtime.objectUrls.has(pendingTrackId)) {
+      playTrack(playlist.id, pendingTrackId);
     }
 
-    if (runtime.pendingPlayTrackId && runtime.objectUrls.has(runtime.pendingPlayTrackId)) {
-      const pending = runtime.pendingPlayTrackId;
-      runtime.pendingPlayTrackId = null;
-      playTrack(playlist.id, pending);
+    if (durationJobs.length) {
+      Promise.allSettled(durationJobs.map(async ({ track, file }) => {
+        track.duration = await readDuration(file);
+      })).then(() => {
+        saveState();
+        render();
+      });
     }
   }
 
@@ -789,10 +835,10 @@
     }
     if (playlist.tracks.length) {
       showToast('Relink the local audio files to play this playlist.');
-      openTrackPicker(playlistId, playlist.tracks[0].id);
+      openTrackPickerPrompt(playlistId, playlist.tracks[0].id);
     } else {
       showToast('Choose local audio files for this playlist.');
-      openTrackPicker(playlistId);
+      openTrackPickerPrompt(playlistId);
     }
   }
 
@@ -803,7 +849,7 @@
     if (!playlist || !track) return;
     if (!local) {
       showToast('Select this local file again to relink it.');
-      openTrackPicker(playlistId, trackId);
+      openTrackPickerPrompt(playlistId, trackId);
       return;
     }
 
@@ -970,7 +1016,7 @@
       case 'open-user': openUser(); break;
       case 'back-home': goHome(); break;
       case 'search': openSearch(); break;
-      case 'add-tracks': openTrackPicker(playlistId); break;
+      case 'prepare-track-picker': prepareTrackPicker(playlistId); break;
       case 'play-track': playTrack(playlistId, trackId); break;
       case 'track-menu': openTrackMenu(target, playlistId, trackId); break;
       case 'edit-profile': openProfileEditor(); break;
@@ -1073,6 +1119,10 @@
   });
 
   trackPicker.addEventListener('change', () => handleTrackFiles([...trackPicker.files]));
+  trackPicker.addEventListener('cancel', () => {
+    runtime.pickerPlaylistId = null;
+    runtime.pendingPlayTrackId = null;
+  });
 
   audio.addEventListener('timeupdate', updatePlayerDom);
   audio.addEventListener('durationchange', updatePlayerDom);

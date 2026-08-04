@@ -9,8 +9,8 @@
   <meta name="apple-mobile-web-app-title" content="iDroid">
   <meta name="description" content="An iPhone-first local music player that plays audio selected from your device without uploading it.">
   <link rel="manifest" href="./manifest.webmanifest">
-  <link rel="apple-touch-icon" href="./assets/apple-touch-icon.png">
-  <link rel="icon" type="image/png" sizes="32x32" href="./assets/icon-32.png">
+  <link rel="apple-touch-icon" href="./music.png">
+  <link rel="icon" type="image/png" sizes="512x512" href="./music.png">
   <link rel="stylesheet" href="./styles.css">
   <title>iDroid</title>
 </head>
@@ -18,7 +18,7 @@
   <div id="app" class="app-shell" aria-live="polite"></div>
 
   <audio id="audio" preload="metadata"></audio>
-  <input id="trackPicker" class="visually-hidden" type="file" accept="audio/*" multiple>
+  <input id="trackPicker" class="visually-hidden" type="file" accept="audio/*,.mp3,.m4a,.aac,.wav,.aiff,.aif,.flac,.ogg,.oga,.opus,.caf,.mp4,.m4b" multiple>
   <input id="imagePicker" class="visually-hidden" type="file" accept="image/*">
 
   <div id="modalRoot"></div>
