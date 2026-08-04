@@ -1,7 +1,7 @@
 {
-  "name": "iDroid Local Music Player",
+  "name": "iDroid Music Player",
   "short_name": "iDroid",
-  "description": "Play audio selected from your device without uploading it.",
+  "description": "A personal music player with permanent Railway storage.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

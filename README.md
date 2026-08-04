@@ -1,46 +1,88 @@
-# iDroid Local Music Player
+# iDroid Music Player — Railway Edition
 
-iDroid is an iPhone-first HTML/CSS/JavaScript music player designed for GitHub Pages. It plays audio selected from the user's device and never uploads audio files to a server.
+iDroid is an iPhone-first HTML/CSS/JavaScript music player backed by a small Node.js server. Music selected from the iPhone Files app is uploaded once to a Railway persistent volume, so playlists and playback remain available after refreshing, closing, or reinstalling the web app.
+
+## What is stored
+
+The Railway volume stores:
+
+- Uploaded music files.
+- Playlist names, ordering, and cover artwork.
+- Track names, ordering, durations, and file metadata.
+- The user name and profile picture.
+
+The app does not require MongoDB or another database. A single `state.json` file stores library metadata, while the audio files are stored separately in the volume. Identical audio files are content-hashed and reused instead of being stored more than once.
 
 ## Included features
 
-- Home screen with the iDroid title, search, user settings, and a two-column playlist grid.
-- Playlist creation, renaming, deletion, and cover-art selection.
-- Profile editing with user name and profile picture.
-- Local multi-file audio selection through the browser's file picker.
-- Persistent player dock across the Home, Playlist, and User screens.
-- Play/pause, seek, next-track handling, sharing, and Media Session integration.
-- Long-press drag reordering for playlist covers and track rows.
-- Search across playlist and track names.
-- Installable Progressive Web App shell with offline interface caching.
-- iPhone safe-area support and responsive layouts for desktop browsers.
+- Existing iDroid mobile interface and navigation.
+- Permanent server-backed playlists and profile settings.
+- Sequential multi-file uploads from the iPhone Files app.
+- Per-file upload progress.
+- HTTP byte-range streaming for seeking and iPhone playback.
+- Playlist and song drag reordering.
+- Automatic duplicate detection within a playlist.
+- Removal of unreferenced audio when a track, playlist, or account is deleted.
+- Optional HTTP Basic Authentication for a private personal deployment.
+- PWA installation with `music.png` as the favicon and iOS icon.
 
-## Important local-file behavior
+## Railway deployment
 
-Audio files are not copied into browser storage and are not uploaded. Playlist names, artwork, profile settings, track names, and ordering are saved in the browser's local storage. Because the browser does not retain the selected audio file itself, tracks must be relinked after the page or installed web app is fully closed or refreshed. Select the same files again; iDroid matches them using filename, file size, and modified date.
+1. Upload the project files to the root of the GitHub repository.
+2. In Railway, create a project and choose **Deploy from GitHub Repo**.
+3. Select the iDroid repository.
+4. Open the new service and add a persistent volume.
+5. Mount the volume at:
 
-Cover art and the profile picture are compressed and saved in browser settings so they remain visible between sessions. Deleting the local account clears this saved app data but does not delete files from the iPhone.
+   ```text
+   /data
+   ```
 
-## Run locally
+6. Add these service variables:
 
-A local server is recommended because service workers do not run from a `file://` URL.
+   ```text
+   STORAGE_DIR=/data
+   APP_USERNAME=your-private-user-name
+   APP_PASSWORD=use-a-long-unique-password
+   MAX_FILE_SIZE_MB=1024
+   ```
+
+   `APP_USERNAME` and `APP_PASSWORD` are optional only if the Railway URL will be protected another way. When both are set, the browser displays its standard sign-in prompt before loading iDroid.
+
+7. Generate a public Railway domain from the service networking settings.
+8. Keep the service at one replica because the attached volume belongs to that service instance.
+9. Open the Railway URL in Safari, sign in, tap **Share**, and choose **Add to Home Screen**.
+
+The service includes `/api/health`, and `railway.toml` configures it as the Railway health check.
+
+## Volume sizing and backups
+
+A few gigabytes of music only needs a small fraction of the available Pro volume capacity. Start with the default allocation or a modest volume and resize it later when needed. Configure Railway volume backups after deployment so the music library and metadata can be restored after accidental deletion.
+
+## Local development
+
+Install Node.js 20 or newer, then run:
 
 ```bash
-python -m http.server 8080
+npm install
+npm start
 ```
 
-Open `http://localhost:8080`.
+Open:
 
-## Deploy to GitHub Pages
+```text
+http://localhost:3000
+```
 
-1. Create a new GitHub repository.
-2. Upload all files and folders from this project to the repository root.
-3. Open **Settings → Pages**.
-4. Under **Build and deployment**, select **Deploy from a branch**.
-5. Select the `main` branch and the `/ (root)` folder, then save.
-6. Open the generated GitHub Pages URL in Safari on the iPhone.
-7. Tap Safari's Share button and choose **Add to Home Screen**.
+Without `STORAGE_DIR`, local data is written to the ignored `data/` directory in the project.
 
-## Audio compatibility
+## Supported audio formats
 
-Playback depends on formats supported by the browser and iOS. MP3, AAC/M4A, and WAV are the safest choices for iPhone Safari. Files using unsupported codecs will remain on the device but may not play in the app.
+The file picker accepts MP3, M4A, AAC, WAV, AIFF, FLAC, OGG, Opus, CAF, MP4, and M4B. Actual playback still depends on Safari and the codec inside the selected file. MP3 and AAC/M4A are the safest formats for iPhone playback.
+
+## Important operational notes
+
+- Do not deploy this version to GitHub Pages; GitHub Pages cannot run the Node.js upload and streaming server.
+- Do not remove or remount the Railway volume unless the music library has been backed up.
+- The app should use one Railway service replica while it relies on a directly attached volume.
+- Increasing the volume size does not require code changes.

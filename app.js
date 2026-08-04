@@ -1,9 +1,6 @@
 (() => {
   'use strict';
 
-  const STORAGE_KEY = 'idroid-state-v1';
-  const HANDLE_DB_NAME = 'idroid-file-handles-v1';
-  const HANDLE_STORE_NAME = 'track-handles';
   const app = document.getElementById('app');
   const audio = document.getElementById('audio');
   const trackPicker = document.getElementById('trackPicker');
@@ -45,16 +42,14 @@
     activeTrackId: null,
     queue: [],
     queueIndex: -1,
-    pendingPlayTrackId: null,
     pickerPlaylistId: null,
     suppressClickUntil: 0,
     drag: null,
-    objectUrls: new Map(),
-    fileHandles: new Map()
+    uploadToast: null
   };
 
-  let fileHandleDbPromise = null;
-  let state = loadState();
+  let state = null;
+  let saveQueue = Promise.resolve();
 
   function createId(prefix = 'id') {
     return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 9)}`;
@@ -62,7 +57,7 @@
 
   function defaultState() {
     return {
-      version: 1,
+      version: 3,
       profile: {
         name: 'RaidenLabs',
         avatar: null,
@@ -77,7 +72,7 @@
 
   function emptyState() {
     return {
-      version: 1,
+      version: 3,
       profile: {
         name: 'New User',
         avatar: null,
@@ -97,13 +92,15 @@
       lastModified: Number(track.lastModified) || 0,
       type: track.type || '',
       duration: Number(track.duration) || 0,
-      addedAt: track.addedAt || new Date().toISOString()
+      addedAt: track.addedAt || new Date().toISOString(),
+      storageName: track.storageName || '',
+      contentHash: track.contentHash || ''
     };
   }
 
   function persistedStateSnapshot() {
     return {
-      version: 2,
+      version: 3,
       profile: {
         name: state.profile.name,
         avatar: state.profile.avatar || null,
@@ -120,28 +117,39 @@
     };
   }
 
-  function loadState() {
-    try {
-      const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-      if (!saved || !Array.isArray(saved.playlists) || !saved.profile) return defaultState();
-      saved.playlists.forEach((playlist, index) => {
-        playlist.gradient ??= index % coverGradients.length;
-        playlist.tracks = Array.isArray(playlist.tracks) ? playlist.tracks.map(cleanTrackMetadata) : [];
-      });
-      return saved;
-    } catch (error) {
-      console.warn('Could not load iDroid state.', error);
-      return defaultState();
-    }
+  async function loadState() {
+    const response = await fetch('/api/state', { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Could not load the library (${response.status}).`);
+    const saved = await response.json();
+    if (!saved || !Array.isArray(saved.playlists) || !saved.profile) return defaultState();
+    saved.playlists.forEach((playlist, index) => {
+      playlist.gradient ??= index % coverGradients.length;
+      playlist.tracks = Array.isArray(playlist.tracks) ? playlist.tracks.map(cleanTrackMetadata) : [];
+    });
+    return saved;
   }
 
   function saveState() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(persistedStateSnapshot()));
-    } catch (error) {
-      showToast('Could not save changes. The selected artwork may be too large.', true);
+    const snapshot = persistedStateSnapshot();
+    saveQueue = saveQueue.catch(() => undefined).then(async () => {
+      const response = await fetch('/api/state', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(snapshot)
+      });
+      if (!response.ok) {
+        const result = await response.json().catch(() => ({}));
+        throw new Error(result.error || `Could not save changes (${response.status}).`);
+      }
+    }).catch((error) => {
       console.error(error);
-    }
+      showToast(error.message || 'Could not save changes.', true);
+    });
+    return saveQueue;
+  }
+
+  async function flushState() {
+    await saveQueue.catch(() => undefined);
   }
 
   function escapeHtml(value = '') {
@@ -163,155 +171,6 @@
 
   function stripExtension(name) {
     return name.replace(/\.[^/.]+$/, '') || name;
-  }
-
-  function fingerprint(file) {
-    return `${file.name}::${file.size}::${file.lastModified}`;
-  }
-
-
-  function supportsPersistentFileHandles() {
-    return window.isSecureContext && typeof window.showOpenFilePicker === 'function' && 'indexedDB' in window;
-  }
-
-  function openFileHandleDatabase() {
-    if (!('indexedDB' in window)) return Promise.resolve(null);
-    if (fileHandleDbPromise) return fileHandleDbPromise;
-
-    fileHandleDbPromise = new Promise((resolve, reject) => {
-      const request = indexedDB.open(HANDLE_DB_NAME, 1);
-      request.onupgradeneeded = () => {
-        const database = request.result;
-        if (!database.objectStoreNames.contains(HANDLE_STORE_NAME)) database.createObjectStore(HANDLE_STORE_NAME);
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () => reject(request.error);
-    }).catch((error) => {
-      console.warn('Persistent file handles are unavailable.', error);
-      return null;
-    });
-
-    return fileHandleDbPromise;
-  }
-
-  async function saveTrackHandle(trackId, handle) {
-    if (!trackId || !handle) return;
-    runtime.fileHandles.set(trackId, handle);
-    const database = await openFileHandleDatabase();
-    if (!database) return;
-    try {
-      await new Promise((resolve, reject) => {
-        const transaction = database.transaction(HANDLE_STORE_NAME, 'readwrite');
-        transaction.objectStore(HANDLE_STORE_NAME).put(handle, trackId);
-        transaction.oncomplete = () => resolve();
-        transaction.onerror = () => reject(transaction.error);
-        transaction.onabort = () => reject(transaction.error);
-      });
-    } catch (error) {
-      console.warn('Could not save a local file handle.', error);
-    }
-  }
-
-  async function loadTrackHandle(trackId) {
-    if (runtime.fileHandles.has(trackId)) return runtime.fileHandles.get(trackId);
-    const database = await openFileHandleDatabase();
-    if (!database) return null;
-    try {
-      const handle = await new Promise((resolve, reject) => {
-        const transaction = database.transaction(HANDLE_STORE_NAME, 'readonly');
-        const request = transaction.objectStore(HANDLE_STORE_NAME).get(trackId);
-        request.onsuccess = () => resolve(request.result || null);
-        request.onerror = () => reject(request.error);
-      });
-      if (handle) runtime.fileHandles.set(trackId, handle);
-      return handle;
-    } catch (error) {
-      console.warn('Could not load a local file handle.', error);
-      return null;
-    }
-  }
-
-  async function deleteTrackHandle(trackId) {
-    runtime.fileHandles.delete(trackId);
-    const database = await openFileHandleDatabase();
-    if (!database) return;
-    try {
-      await new Promise((resolve, reject) => {
-        const transaction = database.transaction(HANDLE_STORE_NAME, 'readwrite');
-        transaction.objectStore(HANDLE_STORE_NAME).delete(trackId);
-        transaction.oncomplete = () => resolve();
-        transaction.onerror = () => reject(transaction.error);
-        transaction.onabort = () => reject(transaction.error);
-      });
-    } catch (error) {
-      console.warn('Could not remove a local file handle.', error);
-    }
-  }
-
-  async function clearTrackHandles() {
-    runtime.fileHandles.clear();
-    const database = await openFileHandleDatabase();
-    if (!database) return;
-    try {
-      await new Promise((resolve, reject) => {
-        const transaction = database.transaction(HANDLE_STORE_NAME, 'readwrite');
-        transaction.objectStore(HANDLE_STORE_NAME).clear();
-        transaction.oncomplete = () => resolve();
-        transaction.onerror = () => reject(transaction.error);
-        transaction.onabort = () => reject(transaction.error);
-      });
-    } catch (error) {
-      console.warn('Could not clear local file handles.', error);
-    }
-  }
-
-  async function requestPersistentMetadataStorage() {
-    try {
-      if (navigator.storage?.persist) await navigator.storage.persist();
-    } catch (_) {
-      /* Storage persistence is optional. */
-    }
-  }
-
-  async function restoreTrackFromSavedHandle(track, requestPermission = false) {
-    const handle = await loadTrackHandle(track.id);
-    if (!handle || typeof handle.getFile !== 'function') return false;
-
-    try {
-      let permission = 'granted';
-      if (typeof handle.queryPermission === 'function') permission = await handle.queryPermission({ mode: 'read' });
-      if (permission === 'prompt' && requestPermission && typeof handle.requestPermission === 'function') {
-        permission = await handle.requestPermission({ mode: 'read' });
-      }
-      if (permission !== 'granted') return false;
-
-      const file = await handle.getFile();
-      if (!isSupportedAudioFile(file)) return false;
-      track.fileName = file.name;
-      track.fingerprint = fingerprint(file);
-      track.size = file.size;
-      track.lastModified = file.lastModified;
-      track.type = file.type;
-      attachFile(track.id, file);
-      return true;
-    } catch (error) {
-      console.warn(`Could not restore ${track.fileName || track.title}.`, error);
-      return false;
-    }
-  }
-
-  async function restoreSavedFileHandles() {
-    let restored = 0;
-    for (const playlist of state.playlists) {
-      for (const track of playlist.tracks) {
-        if (await restoreTrackFromSavedHandle(track, false)) restored += 1;
-      }
-    }
-    if (restored) {
-      saveState();
-      render();
-    }
-    return restored;
   }
 
   function formatDuration(seconds) {
@@ -401,7 +260,7 @@
     }
 
     const rows = playlist.tracks.map((track, index) => {
-      const available = runtime.objectUrls.has(track.id);
+      const available = Boolean(track.storageName);
       return `
         <li class="track-row ${available ? '' : 'unavailable'}" data-track-id="${track.id}" data-playlist-id="${playlist.id}">
           <div class="track-index">${index + 1}</div>
@@ -409,7 +268,7 @@
             <div class="track-title">${escapeHtml(track.title)}</div>
             <div class="track-detail">
               ${available ? icons.local : icons.linkOff}
-              <span>${available ? `${formatDate(track.addedAt)} · ${formatDuration(track.duration)}` : 'Tap to relink local file'}</span>
+              <span>${available ? `${formatDate(track.addedAt)} · ${formatDuration(track.duration)}` : 'Audio file unavailable'}</span>
             </div>
           </button>
           <button class="kebab track-more" type="button" data-action="track-menu" data-playlist-id="${playlist.id}" data-track-id="${track.id}" aria-label="Track options">${icons.kebab}</button>
@@ -440,7 +299,7 @@
         </section>
 
         ${rows ? `<ol class="track-list" aria-label="Tracks">${rows}</ol>` : `
-          <section class="track-empty"><div><strong>This playlist is empty</strong>Add audio from the Files app on your iPhone.</div></section>`}
+          <section class="track-empty"><div><strong>This playlist is empty</strong>Upload audio from the Files app on your iPhone.</div></section>`}
       </main>
     `;
   }
@@ -582,7 +441,7 @@
 
     openModal(`
       <h2 class="modal-title">${existing ? 'Edit Playlist' : 'New Playlist'}</h2>
-      <p class="modal-copy">Change the playlist name and choose cover art stored with this app's local settings.</p>
+      <p class="modal-copy">Change the playlist name and choose cover art stored with your iDroid library.</p>
       <div class="form-grid">
         <div class="field">
           <label for="playlistName">Playlist name</label>
@@ -657,7 +516,7 @@
     if (!playlist) return;
     openModal(`
       <h2 class="modal-title">Delete Playlist?</h2>
-      <p class="modal-copy">This removes “${escapeHtml(playlist.name)}” and its track list. It does not delete any audio files from your device.</p>
+      <p class="modal-copy">This permanently removes “${escapeHtml(playlist.name)}”, its track list, and music files that are not used by another playlist.</p>
       <div class="modal-actions">
         <button class="action-button" type="button" data-delete-cancel>Cancel</button>
         <button class="action-button danger" type="button" data-delete-confirm>Delete</button>
@@ -666,10 +525,6 @@
     modalRoot.querySelector('[data-delete-cancel]')?.addEventListener('click', closeModal);
     modalRoot.querySelector('[data-delete-confirm]')?.addEventListener('click', () => {
       if (runtime.activePlaylistId === playlistId) stopPlayback();
-      playlist.tracks.forEach((track) => {
-        revokeTrackUrl(track.id);
-        deleteTrackHandle(track.id);
-      });
       state.playlists = state.playlists.filter((item) => item.id !== playlistId);
       saveState();
       closeModal();
@@ -751,7 +606,7 @@
     closeOverlays();
     openModal(`
       <h2 class="modal-title">Delete Account?</h2>
-      <p class="modal-copy">This clears the local profile, playlists, cover art, and saved track metadata from this browser. Audio files on your iPhone are not changed.</p>
+      <p class="modal-copy">This permanently removes the profile, playlists, cover art, and uploaded music from iDroid's Railway storage.</p>
       <div class="modal-actions">
         <button class="action-button" type="button" data-account-cancel>Cancel</button>
         <button class="action-button danger" type="button" data-account-confirm>Delete</button>
@@ -760,14 +615,11 @@
     modalRoot.querySelector('[data-account-cancel]')?.addEventListener('click', closeModal);
     modalRoot.querySelector('[data-account-confirm]')?.addEventListener('click', () => {
       stopPlayback();
-      runtime.objectUrls.forEach((item) => URL.revokeObjectURL(item.url));
-      runtime.objectUrls.clear();
-      clearTrackHandles();
       state = emptyState();
       saveState();
       closeModal();
       goHome();
-      showToast('Local account data deleted.');
+      showToast('Account data deleted.');
     });
   }
 
@@ -815,8 +667,6 @@
     const playlist = getPlaylist(playlistId);
     if (!playlist) return;
     if (runtime.activeTrackId === trackId) stopPlayback();
-    revokeTrackUrl(trackId);
-    deleteTrackHandle(trackId);
     playlist.tracks = playlist.tracks.filter((track) => track.id !== trackId);
     saveState();
     render();
@@ -879,65 +729,16 @@
     drawResults();
   }
 
-  function prepareTrackPicker(playlistId, pendingTrackId = null) {
+  function prepareTrackPicker(playlistId) {
     if (!getPlaylist(playlistId)) return false;
     runtime.pickerPlaylistId = playlistId;
-    runtime.pendingPlayTrackId = pendingTrackId;
     trackPicker.value = '';
     return true;
   }
 
-  async function chooseTrackFiles(playlistId, pendingTrackId = null) {
-    if (!prepareTrackPicker(playlistId, pendingTrackId)) return;
-
-    if (!supportsPersistentFileHandles()) {
-      trackPicker.click();
-      return;
-    }
-
-    try {
-      const handles = await window.showOpenFilePicker({
-        multiple: true,
-        excludeAcceptAllOption: false,
-        types: [{
-          description: 'Audio files',
-          accept: {
-            'audio/*': ['.mp3', '.m4a', '.aac', '.wav', '.aiff', '.aif', '.flac', '.ogg', '.oga', '.opus', '.caf', '.mp4', '.m4b']
-          }
-        }]
-      });
-      const entries = [];
-      for (const handle of handles) entries.push({ handle, file: await handle.getFile() });
-      handleTrackFiles(entries.map((entry) => entry.file), entries);
-    } catch (error) {
-      runtime.pickerPlaylistId = null;
-      runtime.pendingPlayTrackId = null;
-      if (error?.name !== 'AbortError') {
-        console.warn('The persistent file picker failed; using the standard picker.', error);
-        prepareTrackPicker(playlistId, pendingTrackId);
-        trackPicker.click();
-      }
-    }
-  }
-
-  function openTrackPickerPrompt(playlistId, pendingTrackId = null) {
-    if (!prepareTrackPicker(playlistId, pendingTrackId)) return;
-    openModal(`
-      <div data-track-picker-prompt>
-        <h2 class="modal-title">Choose Music Files</h2>
-        <p class="modal-copy">iDroid remembers the track list, not the song data. On iPhone, select the same files again after reopening the app and they will reconnect automatically.</p>
-        <div class="modal-actions">
-          <button class="action-button" type="button" data-file-picker-cancel>Cancel</button>
-          <button class="action-button primary" type="button" data-file-picker-open>Choose Files</button>
-        </div>
-      </div>
-    `, true);
-    modalRoot.querySelector('[data-file-picker-cancel]')?.addEventListener('click', () => {
-      runtime.pickerPlaylistId = null;
-      runtime.pendingPlayTrackId = null;
-      closeModal();
-    });
-    modalRoot.querySelector('[data-file-picker-open]')?.addEventListener('click', () => chooseTrackFiles(playlistId, pendingTrackId));
+  function chooseTrackFiles(playlistId) {
+    if (!prepareTrackPicker(playlistId)) return;
+    trackPicker.click();
   }
 
   function isSupportedAudioFile(file) {
@@ -945,114 +746,90 @@
     return /\.(mp3|m4a|aac|wav|aiff|aif|flac|ogg|oga|opus|caf|mp4|m4b)$/i.test(file.name);
   }
 
-  function findMatchingTrack(playlist, file, claimedTrackIds) {
-    const exact = playlist.tracks.find((track) => !claimedTrackIds.has(track.id) && track.fingerprint === fingerprint(file));
-    if (exact) return exact;
-
-    const sameNameAndSize = playlist.tracks.find((track) => (
-      !claimedTrackIds.has(track.id)
-      && track.fileName === file.name
-      && Number(track.size) === Number(file.size)
-    ));
-    if (sameNameAndSize) return sameNameAndSize;
-
-    const sameName = playlist.tracks.filter((track) => !claimedTrackIds.has(track.id) && track.fileName === file.name);
-    return sameName.length === 1 ? sameName[0] : null;
+  function showUploadProgress(fileName, index, total, percent = 0) {
+    if (!runtime.uploadToast || !runtime.uploadToast.isConnected) {
+      runtime.uploadToast = document.createElement('div');
+      runtime.uploadToast.className = 'toast';
+      toastRoot.appendChild(runtime.uploadToast);
+    }
+    runtime.uploadToast.textContent = `Uploading ${index} of ${total}: ${fileName} · ${Math.round(percent)}%`;
   }
 
-  function handleTrackFiles(files, handleEntries = []) {
-    const playlist = getPlaylist(runtime.pickerPlaylistId);
-    const supportedFiles = files.filter(isSupportedAudioFile);
-    const pendingTrackId = runtime.pendingPlayTrackId;
-    const handleByFile = new Map(handleEntries.map((entry) => [entry.file, entry.handle]));
+  function clearUploadProgress() {
+    runtime.uploadToast?.remove();
+    runtime.uploadToast = null;
+  }
 
+  function uploadTrackFile(playlistId, file, duration, onProgress) {
+    return new Promise((resolve, reject) => {
+      const request = new XMLHttpRequest();
+      request.open('POST', `/api/playlists/${encodeURIComponent(playlistId)}/tracks`);
+      request.responseType = 'json';
+      request.upload.addEventListener('progress', (event) => {
+        if (event.lengthComputable) onProgress?.((event.loaded / event.total) * 100);
+      });
+      request.addEventListener('load', () => {
+        const result = request.response || {};
+        if (request.status >= 200 && request.status < 300) resolve(result);
+        else reject(new Error(result.error || `Upload failed (${request.status}).`));
+      });
+      request.addEventListener('error', () => reject(new Error('The upload connection failed.')));
+      request.addEventListener('abort', () => reject(new Error('The upload was cancelled.')));
+
+      const form = new FormData();
+      form.append('file', file, file.name);
+      form.append('title', stripExtension(file.name));
+      form.append('lastModified', String(file.lastModified || 0));
+      form.append('duration', String(duration || 0));
+      request.send(form);
+    });
+  }
+
+  async function handleTrackFiles(files) {
+    const playlistId = runtime.pickerPlaylistId;
+    const supportedFiles = files.filter(isSupportedAudioFile);
     trackPicker.value = '';
     runtime.pickerPlaylistId = null;
-    runtime.pendingPlayTrackId = null;
 
-    if (!playlist || !files.length) return;
+    if (!playlistId || !files.length) return;
     if (!supportedFiles.length) {
       showToast('No supported audio files were selected.', true);
       return;
     }
 
-    if (modalRoot.querySelector('[data-track-picker-prompt]')) closeModal();
-
+    await flushState();
     let added = 0;
-    let relinked = 0;
-    const durationJobs = [];
-    const handleJobs = [];
-    const claimedTrackIds = new Set();
+    let skipped = 0;
+    let failed = 0;
 
-    for (const file of supportedFiles) {
-      let track = findMatchingTrack(playlist, file, claimedTrackIds);
-
-      if (track) {
-        claimedTrackIds.add(track.id);
-        track.fileName = file.name;
-        track.fingerprint = fingerprint(file);
-        track.size = file.size;
-        track.lastModified = file.lastModified;
-        track.type = file.type;
-        attachFile(track.id, file);
-        relinked += 1;
-        if (!track.duration) durationJobs.push({ track, file });
-      } else {
-        track = {
-          id: createId('track'),
-          title: stripExtension(file.name),
-          fileName: file.name,
-          fingerprint: fingerprint(file),
-          size: file.size,
-          lastModified: file.lastModified,
-          type: file.type,
-          duration: 0,
-          addedAt: new Date().toISOString()
-        };
-        playlist.tracks.push(track);
-        claimedTrackIds.add(track.id);
-        attachFile(track.id, file);
-        durationJobs.push({ track, file });
-        added += 1;
+    for (let index = 0; index < supportedFiles.length; index += 1) {
+      const file = supportedFiles[index];
+      try {
+        showUploadProgress(file.name, index + 1, supportedFiles.length, 0);
+        const duration = await readDuration(file);
+        const result = await uploadTrackFile(
+          playlistId,
+          file,
+          duration,
+          (percent) => showUploadProgress(file.name, index + 1, supportedFiles.length, percent)
+        );
+        if (result.state) state = result.state;
+        if (result.skipped) skipped += 1;
+        else added += 1;
+      } catch (error) {
+        failed += 1;
+        console.error(error);
+        showToast(`${file.name}: ${error.message}`, true);
       }
-
-      const handle = handleByFile.get(file);
-      if (handle) handleJobs.push(saveTrackHandle(track.id, handle));
     }
 
-    saveState();
-    requestPersistentMetadataStorage();
+    clearUploadProgress();
     render();
-
     const parts = [];
-    if (added) parts.push(`${added} added`);
-    if (relinked) parts.push(`${relinked} relinked`);
-    showToast(parts.join(' · '));
-
-    if (pendingTrackId && runtime.objectUrls.has(pendingTrackId)) {
-      playTrack(playlist.id, pendingTrackId);
-    }
-
-    if (handleJobs.length) Promise.allSettled(handleJobs);
-    if (durationJobs.length) {
-      Promise.allSettled(durationJobs.map(async ({ track, file }) => {
-        track.duration = await readDuration(file);
-      })).then(() => {
-        saveState();
-        render();
-      });
-    }
-  }
-
-  function attachFile(trackId, file) {
-    revokeTrackUrl(trackId);
-    runtime.objectUrls.set(trackId, { file, url: URL.createObjectURL(file) });
-  }
-
-  function revokeTrackUrl(trackId) {
-    const item = runtime.objectUrls.get(trackId);
-    if (item?.url) URL.revokeObjectURL(item.url);
-    runtime.objectUrls.delete(trackId);
+    if (added) parts.push(`${added} uploaded`);
+    if (skipped) parts.push(`${skipped} already added`);
+    if (failed) parts.push(`${failed} failed`);
+    if (parts.length) showToast(parts.join(' · '), Boolean(failed && !added));
   }
 
   async function readDuration(file) {
@@ -1080,60 +857,33 @@
   async function playPlaylist(playlistId) {
     const playlist = getPlaylist(playlistId);
     if (!playlist) return;
-
-    let firstAvailable = playlist.tracks.find((track) => runtime.objectUrls.has(track.id));
-    if (!firstAvailable) {
-      for (const track of playlist.tracks) {
-        if (await restoreTrackFromSavedHandle(track, false)) {
-          firstAvailable = track;
-          break;
-        }
-      }
-    }
-
-    if (!firstAvailable && playlist.tracks.length) {
-      const firstTrack = playlist.tracks[0];
-      if (await restoreTrackFromSavedHandle(firstTrack, true)) firstAvailable = firstTrack;
-    }
-
+    const firstAvailable = playlist.tracks.find((track) => track.storageName);
     if (firstAvailable) {
-      saveState();
       playTrack(playlistId, firstAvailable.id);
       return;
     }
-    if (playlist.tracks.length) {
-      showToast('Your track list is saved. Select the local files again to reconnect them.');
-      openTrackPickerPrompt(playlistId, playlist.tracks[0].id);
-    } else {
-      showToast('Choose local audio files for this playlist.');
-      openTrackPickerPrompt(playlistId);
-    }
+    showToast('Upload audio files for this playlist.');
+    chooseTrackFiles(playlistId);
   }
 
   async function playTrack(playlistId, trackId) {
     const playlist = getPlaylist(playlistId);
     const track = getTrack(playlistId, trackId);
     if (!playlist || !track) return;
-
-    let local = runtime.objectUrls.get(trackId);
-    if (!local && await restoreTrackFromSavedHandle(track, true)) {
-      local = runtime.objectUrls.get(trackId);
-      saveState();
-      render();
-    }
-    if (!local) {
-      showToast('The track is remembered, but iPhone requires you to select the local file again.');
-      openTrackPickerPrompt(playlistId, trackId);
+    if (!track.storageName) {
+      showToast('This uploaded audio file is unavailable.', true);
       return;
     }
 
     runtime.activePlaylistId = playlistId;
     runtime.activeTrackId = trackId;
-    runtime.queue = playlist.tracks.map((item) => item.id);
+    runtime.queue = playlist.tracks.filter((item) => item.storageName).map((item) => item.id);
     runtime.queueIndex = runtime.queue.indexOf(trackId);
 
-    if (audio.src !== local.url) {
-      audio.src = local.url;
+    const streamUrl = `/api/tracks/${encodeURIComponent(trackId)}/audio`;
+    if (audio.dataset.trackId !== trackId) {
+      audio.src = streamUrl;
+      audio.dataset.trackId = trackId;
       audio.load();
     }
     render();
@@ -1156,6 +906,7 @@
   function stopPlayback() {
     audio.pause();
     audio.removeAttribute('src');
+    delete audio.dataset.trackId;
     audio.load();
     runtime.activePlaylistId = null;
     runtime.activeTrackId = null;
@@ -1166,20 +917,9 @@
 
   async function playNext(direction = 1) {
     if (!runtime.queue.length) return;
-    let index = runtime.queueIndex;
-    for (let attempts = 0; attempts < runtime.queue.length; attempts += 1) {
-      index = (index + direction + runtime.queue.length) % runtime.queue.length;
-      const trackId = runtime.queue[index];
-      const track = getTrack(runtime.activePlaylistId, trackId);
-      if (!runtime.objectUrls.has(trackId) && track) await restoreTrackFromSavedHandle(track, false);
-      if (runtime.objectUrls.has(trackId)) {
-        runtime.queueIndex = index;
-        playTrack(runtime.activePlaylistId, trackId);
-        return;
-      }
-    }
-    audio.pause();
-    showToast('The remaining tracks are remembered but need to be reselected on this device.');
+    const nextIndex = (runtime.queueIndex + direction + runtime.queue.length) % runtime.queue.length;
+    runtime.queueIndex = nextIndex;
+    await playTrack(runtime.activePlaylistId, runtime.queue[nextIndex]);
   }
 
   function seekFromPointer(event, element) {
@@ -1397,7 +1137,6 @@
   trackPicker.addEventListener('change', () => handleTrackFiles([...trackPicker.files]));
   trackPicker.addEventListener('cancel', () => {
     runtime.pickerPlaylistId = null;
-    runtime.pendingPlayTrackId = null;
   });
 
   audio.addEventListener('timeupdate', updatePlayerDom);
@@ -1407,15 +1146,25 @@
   audio.addEventListener('ended', () => playNext(1));
   audio.addEventListener('error', () => showToast('This audio format could not be played.', true));
 
-  window.addEventListener('beforeunload', () => {
-    runtime.objectUrls.forEach((item) => URL.revokeObjectURL(item.url));
-  });
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
     window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch((error) => console.warn('Service worker registration failed.', error)));
   }
 
-  setupMediaSessionActions();
-  render();
-  restoreSavedFileHandles();
+  async function initialize() {
+    try {
+      state = await loadState();
+      setupMediaSessionActions();
+      render();
+    } catch (error) {
+      console.error(error);
+      app.innerHTML = `
+        <main class="screen home-screen">
+          <section class="home-empty"><div><strong>iDroid could not load</strong>${escapeHtml(error.message || 'Check the Railway deployment and persistent volume.')}</div></section>
+        </main>
+      `;
+    }
+  }
+
+  initialize();
 })();

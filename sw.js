@@ -1,11 +1,11 @@
-const CACHE_NAME = 'idroid-shell-v3';
+const CACHE_NAME = 'idroid-shell-v4';
 const APP_SHELL = [
-  './',
-  './index.html',
-  './styles.css',
-  './app.js',
-  './manifest.webmanifest',
-  './music.png'
+  '/',
+  '/index.html',
+  '/styles.css',
+  '/app.js',
+  '/manifest.webmanifest',
+  '/music.png'
 ];
 
 self.addEventListener('install', (event) => {
@@ -24,20 +24,30 @@ self.addEventListener('activate', (event) => {
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
-  if (url.origin !== self.location.origin) return;
+  if (url.origin !== self.location.origin || url.pathname.startsWith('/api/')) return;
 
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request)
         .then((response) => {
-          if (response.ok && event.request.destination !== 'audio') {
+          if (response.ok) {
             const copy = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+            caches.open(CACHE_NAME).then((cache) => cache.put('/index.html', copy));
           }
           return response;
         })
-        .catch(() => cached || caches.match('./index.html'));
-      return cached || network;
-    })
+        .catch(() => caches.match('/index.html'))
+    );
+    return;
+  }
+
+  event.respondWith(
+    caches.match(event.request).then((cached) => cached || fetch(event.request).then((response) => {
+      if (response.ok) {
+        const copy = response.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+      }
+      return response;
+    }))
   );
 });
