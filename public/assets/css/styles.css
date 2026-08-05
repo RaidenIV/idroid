@@ -3173,3 +3173,44 @@ html:not([data-theme="light"]) .playlist-screen .big-play {
   }
 }
 
+/* Keep quiet waveform sections visible without flattening louder dynamics. */
+.wave-bar {
+  min-height: 2px;
+}
+
+/* The theme control is a standalone row with a transparent track. */
+.appearance-mode-setting {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.appearance-mode-label {
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.color-mode-toggle,
+.color-mode-toggle.is-dark,
+html[data-theme="light"] .color-mode-toggle {
+  color: #ffffff;
+  background: transparent !important;
+  box-shadow: inset 0 0 0 1.5px currentColor;
+}
+
+html[data-theme="light"] .color-mode-toggle {
+  color: rgb(36, 0, 255);
+}
+
+.color-mode-toggle-thumb {
+  background: currentColor;
+  border: 0;
+  box-shadow: none;
+}

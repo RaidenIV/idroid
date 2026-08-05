@@ -254,19 +254,19 @@
     if (!samples.length) return [];
     const sorted = [...samples].sort((a, b) => a - b);
     const percentile = (ratio) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * ratio)))] || 0;
-    const floor = percentile(0.08);
-    const ceiling = Math.max(percentile(0.985), floor + 0.00001);
-    const stretched = samples.map((sample) => {
-      const normalized = Math.max(0, Math.min(1, (sample - floor) / (ceiling - floor)));
-      return Math.pow(normalized, 1.24);
+    const ceiling = Math.max(percentile(0.99), sorted[sorted.length - 1] * 0.72, 0.00001);
+    const compressed = samples.map((sample) => {
+      const normalized = Math.max(0, Math.min(1, sample / ceiling));
+      if (normalized <= 0) return 0.045;
+      return Math.max(0.06, Math.pow(normalized, 0.72));
     });
 
-    return stretched.map((sample, index) => {
-      const left = stretched[Math.max(0, index - 1)];
-      const right = stretched[Math.min(stretched.length - 1, index + 1)];
+    return compressed.map((sample, index) => {
+      const left = compressed[Math.max(0, index - 1)];
+      const right = compressed[Math.min(compressed.length - 1, index + 1)];
       const localAverage = (left + sample + right) / 3;
-      const detailed = sample + (sample - localAverage) * 0.28;
-      return Math.max(0, Math.min(1, detailed));
+      const detailed = sample + (sample - localAverage) * 0.18;
+      return Math.max(0.045, Math.min(1, detailed));
     });
   }
 
@@ -1021,21 +1021,16 @@
           <input id="profileImage" class="visually-hidden" type="file" accept="image/*">
         </div>
 
-        <section class="appearance-settings" aria-labelledby="appearanceSettingsTitle">
-          <div class="appearance-setting-row">
-            <div>
-              <strong id="appearanceSettingsTitle">Color mode</strong>
-              <small data-theme-mode-label>${draft.mode === 'dark' ? 'Dark Mode' : 'Light Mode'}</small>
-            </div>
-            <button class="color-mode-toggle ${draft.mode === 'dark' ? 'is-dark' : ''}" type="button"
-                    data-theme-toggle aria-pressed="${draft.mode === 'dark'}"
-                    aria-label="Switch to ${draft.mode === 'dark' ? 'light' : 'dark'} mode">
-              <span class="color-mode-toggle-track">
-                <span class="color-mode-toggle-thumb" aria-hidden="true"></span>
-              </span>
-            </button>
-          </div>
-        </section>
+        <div class="appearance-mode-setting">
+          <span class="appearance-mode-label" data-theme-mode-label>${draft.mode === 'dark' ? 'Dark Mode' : 'Light Mode'}</span>
+          <button class="color-mode-toggle ${draft.mode === 'dark' ? 'is-dark' : ''}" type="button"
+                  data-theme-toggle aria-pressed="${draft.mode === 'dark'}"
+                  aria-label="Switch to ${draft.mode === 'dark' ? 'light' : 'dark'} mode">
+            <span class="color-mode-toggle-track">
+              <span class="color-mode-toggle-thumb" aria-hidden="true"></span>
+            </span>
+          </button>
+        </div>
       </div>
       <div class="modal-actions">
         <button class="action-button" type="button" data-profile-cancel>Cancel</button>
@@ -1367,11 +1362,11 @@
 
     const sorted = [...samples].sort((a, b) => a - b);
     const percentile = (ratio) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * ratio)))] || 0;
-    const floor = percentile(0.06);
-    const ceiling = Math.max(percentile(0.985), floor + 0.00001);
+    const ceiling = Math.max(percentile(0.99), sorted[sorted.length - 1] * 0.72, 0.00001);
     return samples.map((sample) => {
-      const normalized = Math.max(0, Math.min(1, (sample - floor) / (ceiling - floor)));
-      return Math.round(Math.pow(normalized, 1.18) * 1000) / 1000;
+      const normalized = Math.max(0, Math.min(1, sample / ceiling));
+      const visible = normalized <= 0 ? 0.045 : Math.max(0.06, Math.pow(normalized, 0.72));
+      return Math.round(visible * 1000) / 1000;
     });
   }
 
