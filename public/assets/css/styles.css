@@ -3214,3 +3214,134 @@ html[data-theme="light"] .color-mode-toggle {
   border: 0;
   box-shadow: none;
 }
+
+/* Balanced waveform contrast: quiet passages remain visible while peaks keep useful separation. */
+.wave-bar {
+  min-height: 2px;
+}
+
+/* Song option kebabs sit directly on the playlist, without their own card surface. */
+.track-row .track-more,
+.track-row .track-more:hover,
+.track-row .track-more:active {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Every button receives the same tactile press response without replacing existing transforms. */
+button:not(:disabled) {
+  scale: 1;
+  transition-property: scale, transform, background-color, color, opacity, box-shadow;
+  transition-duration: .13s, .18s, .18s, .18s, .18s, .18s;
+  transition-timing-function: cubic-bezier(.2, .8, .3, 1);
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:not(:disabled):active {
+  scale: .93;
+}
+
+/* The playlist-page artwork is 25% smaller while remaining centered. */
+.playlist-hero-cover {
+  width: min(75%, 458px);
+}
+
+/* Active-track playback indicator: five animated bars while playing, five dots while paused. */
+.track-index {
+  display: grid;
+  place-items: center;
+  min-width: 0;
+}
+
+.track-playback-indicator {
+  display: none;
+  width: 24px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+
+.track-playback-bar {
+  width: 3px;
+  height: 4px;
+  border-radius: 999px;
+  background: currentColor;
+  transform-origin: center;
+}
+
+.track-row.active-track .track-number {
+  display: none;
+}
+
+.track-row.active-track .track-playback-indicator {
+  display: inline-flex;
+}
+
+.track-row.active-track.is-playing .track-playback-indicator {
+  color: var(--text);
+}
+
+.track-row.active-track.is-playing .track-playback-bar {
+  animation: playlist-track-wave .72s ease-in-out infinite alternate;
+  animation-delay: calc(var(--bar) * -0.105s);
+}
+
+.track-row.active-track.is-playing .track-playback-bar:nth-child(1) { --wave-height: 9px; }
+.track-row.active-track.is-playing .track-playback-bar:nth-child(2) { --wave-height: 17px; }
+.track-row.active-track.is-playing .track-playback-bar:nth-child(3) { --wave-height: 12px; }
+.track-row.active-track.is-playing .track-playback-bar:nth-child(4) { --wave-height: 20px; }
+.track-row.active-track.is-playing .track-playback-bar:nth-child(5) { --wave-height: 7px; }
+
+.track-row.active-track.is-paused .track-playback-indicator {
+  color: var(--muted);
+  gap: 2px;
+}
+
+.track-row.active-track.is-paused .track-playback-bar {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  animation: none;
+}
+
+.track-row.active-track.is-playing .track-main {
+  background: var(--surface);
+}
+
+.track-row.active-track.is-paused .track-main,
+.track-row.active-track:not(.is-playing) .track-main {
+  background: var(--bg) !important;
+}
+
+@keyframes playlist-track-wave {
+  from { height: 4px; opacity: .7; }
+  to { height: var(--wave-height); opacity: 1; }
+}
+
+@media (max-width: 620px) {
+  .playlist-hero-cover {
+    width: 75%;
+  }
+
+  .track-playback-indicator {
+    width: 21px;
+    gap: 1.5px;
+  }
+
+  .track-playback-bar {
+    width: 2.5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button:not(:disabled) {
+    transition-duration: .01ms !important;
+  }
+
+  .track-row.active-track.is-playing .track-playback-bar {
+    animation: none;
+    height: var(--wave-height);
+  }
+}
+

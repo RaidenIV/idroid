@@ -254,19 +254,21 @@
     if (!samples.length) return [];
     const sorted = [...samples].sort((a, b) => a - b);
     const percentile = (ratio) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * ratio)))] || 0;
-    const ceiling = Math.max(percentile(0.99), sorted[sorted.length - 1] * 0.72, 0.00001);
-    const compressed = samples.map((sample) => {
-      const normalized = Math.max(0, Math.min(1, sample / ceiling));
-      if (normalized <= 0) return 0.045;
-      return Math.max(0.06, Math.pow(normalized, 0.72));
+    const quietReference = percentile(0.035);
+    const ceiling = Math.max(percentile(0.988), quietReference + 0.00001);
+    const visibleFloor = 0.035;
+    const balanced = samples.map((sample) => {
+      const adjustedFloor = quietReference * 0.45;
+      const normalized = Math.max(0, Math.min(1, (sample - adjustedFloor) / Math.max(0.00001, ceiling - adjustedFloor)));
+      return visibleFloor + Math.pow(normalized, 0.96) * (1 - visibleFloor);
     });
 
-    return compressed.map((sample, index) => {
-      const left = compressed[Math.max(0, index - 1)];
-      const right = compressed[Math.min(compressed.length - 1, index + 1)];
+    return balanced.map((sample, index) => {
+      const left = balanced[Math.max(0, index - 1)];
+      const right = balanced[Math.min(balanced.length - 1, index + 1)];
       const localAverage = (left + sample + right) / 3;
-      const detailed = sample + (sample - localAverage) * 0.18;
-      return Math.max(0.045, Math.min(1, detailed));
+      const detailed = sample + (sample - localAverage) * 0.23;
+      return Math.max(visibleFloor, Math.min(1, detailed));
     });
   }
 
@@ -471,7 +473,16 @@
       const available = Boolean(track.storageName);
       return `
         <li class="track-row ${available ? '' : 'unavailable'} ${runtime.activeTrackId === track.id ? 'active-track' : ''}" data-track-id="${track.id}" data-playlist-id="${playlist.id}">
-          <div class="track-index">${index + 1}</div>
+          <div class="track-index">
+            <span class="track-number">${index + 1}</span>
+            <span class="track-playback-indicator" aria-hidden="true">
+              <span class="track-playback-bar" style="--bar:0"></span>
+              <span class="track-playback-bar" style="--bar:1"></span>
+              <span class="track-playback-bar" style="--bar:2"></span>
+              <span class="track-playback-bar" style="--bar:3"></span>
+              <span class="track-playback-bar" style="--bar:4"></span>
+            </span>
+          </div>
           <button class="track-main" type="button" data-action="play-track" data-playlist-id="${playlist.id}" data-track-id="${track.id}">
             <div class="track-title">${escapeHtml(track.title)}</div>
             <div class="track-detail">
@@ -567,7 +578,19 @@
     `;
   }
 
+  function updatePlaylistTrackPlaybackDom() {
+    const isPlaying = Boolean(runtime.activeTrackId && !audio.paused && !audio.ended);
+    app.querySelectorAll('.track-row').forEach((row) => {
+      const isActive = row.dataset.trackId === runtime.activeTrackId
+        && row.dataset.playlistId === runtime.activePlaylistId;
+      row.classList.toggle('active-track', isActive);
+      row.classList.toggle('is-playing', isActive && isPlaying);
+      row.classList.toggle('is-paused', isActive && !isPlaying);
+    });
+  }
+
   function updatePlayerDom() {
+    updatePlaylistTrackPlaybackDom();
     const dock = app.querySelector('.player-dock');
     if (!dock) return;
     const toggle = dock.querySelector('.player-toggle');
@@ -1362,10 +1385,12 @@
 
     const sorted = [...samples].sort((a, b) => a - b);
     const percentile = (ratio) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * ratio)))] || 0;
-    const ceiling = Math.max(percentile(0.99), sorted[sorted.length - 1] * 0.72, 0.00001);
+    const quietReference = percentile(0.035);
+    const ceiling = Math.max(percentile(0.988), quietReference + 0.00001);
+    const adjustedFloor = quietReference * 0.45;
     return samples.map((sample) => {
-      const normalized = Math.max(0, Math.min(1, sample / ceiling));
-      const visible = normalized <= 0 ? 0.045 : Math.max(0.06, Math.pow(normalized, 0.72));
+      const normalized = Math.max(0, Math.min(1, (sample - adjustedFloor) / Math.max(0.00001, ceiling - adjustedFloor)));
+      const visible = 0.035 + Math.pow(normalized, 0.96) * 0.965;
       return Math.round(visible * 1000) / 1000;
     });
   }
