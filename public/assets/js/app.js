@@ -54,82 +54,55 @@
   ];
 
 
-  const DISPLAY_STORAGE_KEYS = {
-    theme: 'idroid_theme_mode_v1',
-    accent: 'idroid_accent_color_v1'
+  const DISPLAY_STORAGE_KEY = 'idroid_theme_mode_v1';
+  const LEGACY_ACCENT_STORAGE_KEY = 'idroid_accent_color_v1';
+  const FIXED_THEME_COLORS = {
+    dark: { accent: '#ffe100', rgb: '255, 225, 0', contrast: '#111111' },
+    light: { accent: '#2400ff', rgb: '36, 0, 255', contrast: '#ffffff' }
   };
-  const DARK_MODE_ACCENTS = ['#ff5fd2', '#ff00b5', '#ff2000', '#ff8a00', '#fff400', '#9fff00', '#35ff00', '#00ff35', '#00ff8a', '#0075ff'];
-  const LIGHT_MODE_ACCENTS = ['#2400ff', '#8a00ff', '#df00ff', '#ff00b5', '#ff5fd2', '#ff004a'];
-  const DEFAULT_ACCENTS = { dark: '#ff8a00', light: '#2400ff' };
 
   function normalizeThemeMode(mode) {
     return mode === 'light' ? 'light' : 'dark';
   }
 
-  function accentOptionsForMode(mode) {
-    return normalizeThemeMode(mode) === 'light' ? LIGHT_MODE_ACCENTS : DARK_MODE_ACCENTS;
-  }
-
-  function normalizeAccentColor(color, mode) {
-    const normalizedMode = normalizeThemeMode(mode);
-    const normalizedColor = String(color || '').trim().toLowerCase();
-    return accentOptionsForMode(normalizedMode).includes(normalizedColor)
-      ? normalizedColor
-      : DEFAULT_ACCENTS[normalizedMode];
-  }
-
-  function hexToRgb(hex) {
-    const numeric = Number.parseInt(String(hex).replace('#', ''), 16);
-    return {
-      r: (numeric >> 16) & 255,
-      g: (numeric >> 8) & 255,
-      b: numeric & 255
-    };
-  }
-
   function getDisplayPreferences() {
     let mode = 'dark';
-    let accent = DEFAULT_ACCENTS.dark;
     try {
-      mode = normalizeThemeMode(localStorage.getItem(DISPLAY_STORAGE_KEYS.theme));
-      accent = normalizeAccentColor(localStorage.getItem(DISPLAY_STORAGE_KEYS.accent), mode);
+      mode = normalizeThemeMode(localStorage.getItem(DISPLAY_STORAGE_KEY));
     } catch (_) {
       mode = 'dark';
-      accent = DEFAULT_ACCENTS.dark;
     }
-    return { mode, accent };
+    return { mode };
   }
 
-  function applyDisplayPreferences(mode, accent, persist = true) {
+  function applyDisplayPreferences(mode, persist = true) {
     const normalizedMode = normalizeThemeMode(mode);
-    const normalizedAccent = normalizeAccentColor(accent, normalizedMode);
-    const { r, g, b } = hexToRgb(normalizedAccent);
-    const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    const colors = FIXED_THEME_COLORS[normalizedMode];
     const root = document.documentElement;
     root.dataset.theme = normalizedMode;
     document.body.dataset.theme = normalizedMode;
-    root.style.setProperty('--accent', normalizedAccent);
-    root.style.setProperty('--accent-rgb', `${r}, ${g}, ${b}`);
-    root.style.setProperty('--accent-soft', `rgba(${r}, ${g}, ${b}, .2)`);
-    root.style.setProperty('--accent-contrast', luminance > .62 ? '#111111' : '#ffffff');
+    root.style.setProperty('--accent', colors.accent);
+    root.style.setProperty('--accent-rgb', colors.rgb);
+    root.style.setProperty('--accent-soft', `rgba(${colors.rgb}, .2)`);
+    root.style.setProperty('--accent-contrast', colors.contrast);
 
     const themeMeta = document.querySelector('meta[name="theme-color"]');
     if (themeMeta) themeMeta.content = normalizedMode === 'light' ? '#f3f3f4' : '#151515';
 
     if (persist) {
       try {
-        localStorage.setItem(DISPLAY_STORAGE_KEYS.theme, normalizedMode);
-        localStorage.setItem(DISPLAY_STORAGE_KEYS.accent, normalizedAccent);
+        localStorage.setItem(DISPLAY_STORAGE_KEY, normalizedMode);
+        localStorage.removeItem(LEGACY_ACCENT_STORAGE_KEY);
       } catch (_) {
         // The visual preference still applies for the current session.
       }
     }
-    return { mode: normalizedMode, accent: normalizedAccent };
+    return { mode: normalizedMode };
   }
 
   function loadDisplayPreferences() {
     const preferences = getDisplayPreferences();
-    applyDisplayPreferences(preferences.mode, preferences.accent, false);
+    applyDisplayPreferences(preferences.mode, false);
   }
 
   const WAVEFORM_SAMPLE_COUNT = 256;
@@ -906,6 +879,8 @@
       </div>
     `, true);
 
+    if (existing) modalRoot.querySelector('.modal-backdrop')?.classList.add('playlist-editor-backdrop');
+
     const nameInput = modalRoot.querySelector('#playlistName');
     const coverInput = modalRoot.querySelector('#playlistCover');
     const status = modalRoot.querySelector('#playlistCoverStatus');
@@ -980,17 +955,8 @@
     const preferences = getDisplayPreferences();
     const draft = {
       avatar: state.profile.avatar,
-      mode: preferences.mode,
-      accent: preferences.accent
+      mode: preferences.mode
     };
-
-    const accentMarkup = () => accentOptionsForMode(draft.mode).map((color) => `
-      <button class="accent-color-swatch ${draft.accent === color ? 'is-active' : ''}" type="button"
-              data-accent-color="${color}" style="--swatch-color:${color}"
-              aria-label="Use accent color ${color}" aria-pressed="${draft.accent === color}">
-        <span aria-hidden="true"></span>
-      </button>
-    `).join('');
 
     openModal(`
       <h2 class="modal-title">Edit Profile</h2>
@@ -1019,8 +985,6 @@
               </span>
             </button>
           </div>
-          <div class="appearance-section-label">Accent color</div>
-          <div class="accent-color-grid" data-accent-grid aria-label="Accent color choices">${accentMarkup()}</div>
         </section>
       </div>
       <div class="modal-actions">
@@ -1032,7 +996,6 @@
     const imageInput = modalRoot.querySelector('#profileImage');
     const status = modalRoot.querySelector('#profileImageStatus');
     const themeToggle = modalRoot.querySelector('[data-theme-toggle]');
-    const accentGrid = modalRoot.querySelector('[data-accent-grid]');
     const modeLabel = modalRoot.querySelector('[data-theme-mode-label]');
 
     const renderAppearanceControls = () => {
@@ -1040,22 +1003,11 @@
       themeToggle?.setAttribute('aria-pressed', String(draft.mode === 'dark'));
       themeToggle?.setAttribute('aria-label', `Switch to ${draft.mode === 'dark' ? 'light' : 'dark'} mode`);
       if (modeLabel) modeLabel.textContent = draft.mode === 'dark' ? 'Dark Mode' : 'Light Mode';
-      if (accentGrid) accentGrid.innerHTML = accentMarkup();
     };
 
     themeToggle?.addEventListener('click', () => {
       draft.mode = draft.mode === 'dark' ? 'light' : 'dark';
-      draft.accent = normalizeAccentColor(draft.accent, draft.mode);
-      applyDisplayPreferences(draft.mode, draft.accent, true);
-      renderAppearanceControls();
-      render();
-    });
-
-    accentGrid?.addEventListener('click', (event) => {
-      const swatch = event.target.closest('[data-accent-color]');
-      if (!swatch) return;
-      draft.accent = normalizeAccentColor(swatch.dataset.accentColor, draft.mode);
-      applyDisplayPreferences(draft.mode, draft.accent, true);
+      applyDisplayPreferences(draft.mode, true);
       renderAppearanceControls();
       render();
     });
@@ -1869,6 +1821,7 @@
   function beginScrub(event) {
     const element = event.target.closest('[data-scrubber]');
     if (!element || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
+    if (element.dataset.scrubber === 'dock' && !event.target.closest('.waveform-viewport')) return;
     if (event.button !== undefined && event.button !== 0) return;
 
     event.preventDefault();

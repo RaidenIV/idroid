@@ -1,4 +1,4 @@
-const CACHE_NAME = 'idroid-shell-v16';
+const CACHE_NAME = 'idroid-shell-v17';
 const APP_SHELL = [
   '/',
   '/index.html',
