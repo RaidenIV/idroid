@@ -3345,3 +3345,102 @@ button:not(:disabled):active {
   }
 }
 
+/* Latest compact-player, playlist-row, weighted-scrub, and dock-origin transition fixes. */
+
+/* Individual songs stay visually stable when pressed; their kebab control keeps the global button feedback. */
+.track-main,
+.track-main:active {
+  scale: 1 !important;
+  transform: none !important;
+}
+
+.track-row:active {
+  background: transparent !important;
+}
+
+/* The active song is identified only by the five-bar/dot indicator, never by a card surface. */
+.track-row,
+.track-row.active-track,
+.track-row.active-track.is-playing,
+.track-row.active-track.is-paused,
+.track-row.active-track .track-main,
+.track-row.active-track.is-playing .track-main,
+.track-row.active-track.is-paused .track-main,
+.track-row.active-track:not(.is-playing) .track-main {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+/* Give scrubbing a heavier, more deliberate feel. */
+.waveform-viewport {
+  touch-action: none;
+}
+
+body.scrubbing .waveform-data {
+  will-change: transform;
+}
+
+/* Keep the Home add control exactly as tall as the compact player. */
+body.player-visible.home-view .home-add {
+  width: 72px;
+  min-width: 72px;
+  height: 72px;
+  border-radius: 36px;
+}
+
+body.home-view.player-visible .player-dock {
+  min-height: 72px;
+}
+
+.player-dock.visible {
+  cursor: pointer;
+}
+
+/* Web Animations handles expansion from and collapse into the actual mini-player rectangle. */
+.now-playing-sheet.dock-origin-transition,
+.now-playing-backdrop.dock-origin-transition,
+.now-playing-sheet.dock-origin-transition .now-playing-copy,
+.now-playing-sheet.dock-origin-transition .now-playing-cover,
+.now-playing-sheet.dock-origin-transition .now-playing-waveform,
+.now-playing-sheet.dock-origin-transition .now-playing-time,
+.now-playing-sheet.dock-origin-transition .now-playing-controls {
+  animation: none !important;
+}
+
+.now-playing-sheet.dock-origin-transition {
+  transform-origin: center center;
+  will-change: transform, opacity, border-radius, filter;
+}
+
+.now-playing-backdrop.dock-origin-transition {
+  will-change: opacity, backdrop-filter;
+}
+
+@media (max-width: 620px) {
+  body.player-visible.home-view .home-add {
+    width: 64px;
+    min-width: 64px;
+    height: 64px;
+    border-radius: 32px;
+  }
+
+  body.home-view.player-visible .player-dock {
+    min-height: 64px;
+  }
+}
+
+@media (max-width: 430px) {
+  body.player-visible.home-view .home-add {
+    left: calc(100% - 41px);
+    width: 64px;
+    min-width: 64px;
+    height: 64px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .now-playing-sheet.dock-origin-transition,
+  .now-playing-backdrop.dock-origin-transition {
+    will-change: auto;
+  }
+}

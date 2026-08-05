@@ -107,6 +107,8 @@
 
   const WAVEFORM_SAMPLE_COUNT = 256;
   const WAVEFORM_MIN_VALUE = 0.018;
+  const SCRUB_DRAG_WEIGHT = 1.55;
+  const SCRUB_TAP_THRESHOLD = 7;
 
   const runtime = {
     view: 'home',
@@ -649,7 +651,157 @@
     }, 280);
   }
 
+  function getMiniPlayerRect() {
+    const dock = app.querySelector('.player-dock.visible');
+    if (!dock) return null;
+    const rect = dock.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0 ? rect : null;
+  }
+
+  function dockTransformForRects(sourceRect, targetRect) {
+    if (!sourceRect || !targetRect || !targetRect.width || !targetRect.height) {
+      return { transform: 'translate3d(0, 18vh, 0) scale(.54, .18)', borderRadius: '36px' };
+    }
+    const sourceCenterX = sourceRect.left + sourceRect.width / 2;
+    const sourceCenterY = sourceRect.top + sourceRect.height / 2;
+    const targetCenterX = targetRect.left + targetRect.width / 2;
+    const targetCenterY = targetRect.top + targetRect.height / 2;
+    const scaleX = Math.max(.08, sourceRect.width / targetRect.width);
+    const scaleY = Math.max(.08, sourceRect.height / targetRect.height);
+    return {
+      transform: `translate3d(${sourceCenterX - targetCenterX}px, ${sourceCenterY - targetCenterY}px, 0) scale(${scaleX}, ${scaleY})`,
+      borderRadius: `${Math.max(20, sourceRect.height / 2)}px`
+    };
+  }
+
+  function animateNowPlayingFromMini(sheet, backdrop, sourceRect) {
+    if (!sheet || !backdrop || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return;
+    if (typeof sheet.animate !== 'function') return;
+
+    const targetRect = sheet.getBoundingClientRect();
+    const origin = dockTransformForRects(sourceRect, targetRect);
+    const duration = 480;
+    sheet.dataset.transitioning = 'true';
+
+    const sheetAnimation = sheet.animate([
+      {
+        opacity: .9,
+        transform: origin.transform,
+        borderRadius: origin.borderRadius,
+        filter: 'blur(1px)'
+      },
+      {
+        opacity: 1,
+        transform: 'translate3d(0, 0, 0) scale(1, 1)',
+        borderRadius: '34px',
+        filter: 'blur(0)'
+      }
+    ], {
+      duration,
+      easing: 'cubic-bezier(.16, 1, .3, 1)',
+      fill: 'both'
+    });
+
+    backdrop.animate([
+      { opacity: 0, backdropFilter: 'blur(0)', webkitBackdropFilter: 'blur(0)' },
+      { opacity: 1, backdropFilter: 'blur(10px)', webkitBackdropFilter: 'blur(10px)' }
+    ], {
+      duration: 320,
+      easing: 'ease-out',
+      fill: 'both'
+    });
+
+    const contentNodes = sheet.querySelectorAll(
+      '.now-playing-copy, .now-playing-cover, .now-playing-waveform, .now-playing-time, .now-playing-controls'
+    );
+    contentNodes.forEach((node, index) => {
+      node.animate([
+        { opacity: 0, transform: 'translate3d(0, 12px, 0) scale(.985)' },
+        { opacity: 1, transform: 'translate3d(0, 0, 0) scale(1)' }
+      ], {
+        duration: 300,
+        delay: 90 + index * 24,
+        easing: 'cubic-bezier(.16, 1, .3, 1)',
+        fill: 'both'
+      });
+    });
+
+    sheetAnimation.finished
+      .catch(() => undefined)
+      .finally(() => {
+        if (sheet.isConnected) delete sheet.dataset.transitioning;
+      });
+  }
+
+  function animateNowPlayingIntoMini(sheet, backdrop, finish) {
+    const targetRect = getMiniPlayerRect();
+    if (
+      !sheet
+      || !backdrop
+      || !targetRect
+      || typeof sheet.animate !== 'function'
+      || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    ) {
+      return false;
+    }
+
+    const sourceRect = sheet.getBoundingClientRect();
+    const destination = dockTransformForRects(targetRect, sourceRect);
+    sheet.dataset.transitioning = 'true';
+    sheet.style.pointerEvents = 'none';
+    backdrop.style.pointerEvents = 'none';
+
+    const contentAnimations = [...sheet.querySelectorAll(
+      '.now-playing-copy, .now-playing-cover, .now-playing-waveform, .now-playing-time, .now-playing-controls'
+    )].map((node) => node.animate([
+      { opacity: 1, transform: 'translate3d(0, 0, 0) scale(1)' },
+      { opacity: 0, transform: 'translate3d(0, 10px, 0) scale(.985)' }
+    ], {
+      duration: 180,
+      easing: 'ease-in',
+      fill: 'both'
+    }));
+
+    const sheetAnimation = sheet.animate([
+      {
+        opacity: 1,
+        transform: 'translate3d(0, 0, 0) scale(1, 1)',
+        borderRadius: '34px',
+        filter: 'blur(0)'
+      },
+      {
+        opacity: .88,
+        transform: destination.transform,
+        borderRadius: destination.borderRadius,
+        filter: 'blur(1px)'
+      }
+    ], {
+      duration: 390,
+      easing: 'cubic-bezier(.55, .02, .8, .28)',
+      fill: 'both'
+    });
+
+    const backdropAnimation = backdrop.animate([
+      { opacity: 1, backdropFilter: 'blur(10px)', webkitBackdropFilter: 'blur(10px)' },
+      { opacity: 0, backdropFilter: 'blur(0)', webkitBackdropFilter: 'blur(0)' }
+    ], {
+      duration: 300,
+      easing: 'ease-in',
+      fill: 'both'
+    });
+
+    Promise.allSettled([
+      sheetAnimation.finished,
+      backdropAnimation.finished,
+      ...contentAnimations.map((animation) => animation.finished)
+    ]).then(finish);
+    window.setTimeout(finish, 470);
+    return true;
+  }
+
   function openNowPlayingModal() {
+    if (modalRoot.querySelector('.now-playing-modal')) return;
+    const miniPlayerRect = getMiniPlayerRect();
     const playlist = getPlaylist(runtime.activePlaylistId);
     const track = getTrack(runtime.activePlaylistId, runtime.activeTrackId);
     if (!playlist || !track) return;
@@ -693,11 +845,12 @@
 
     const nowPlayingBackdrop = modalRoot.querySelector('.modal-backdrop');
     const nowPlayingSheet = modalRoot.querySelector('.modal-sheet');
-    nowPlayingBackdrop?.classList.add('now-playing-backdrop');
-    nowPlayingSheet?.classList.add('now-playing-sheet');
+    nowPlayingBackdrop?.classList.add('now-playing-backdrop', 'dock-origin-transition');
+    nowPlayingSheet?.classList.add('now-playing-sheet', 'dock-origin-transition');
     requestAnimationFrame(() => {
       nowPlayingBackdrop?.classList.add('is-expanded');
       nowPlayingSheet?.classList.add('is-expanded');
+      animateNowPlayingFromMini(nowPlayingSheet, nowPlayingBackdrop, miniPlayerRect);
     });
 
     modalRoot.querySelector('.now-playing-toggle')?.addEventListener('click', () => {
@@ -902,11 +1055,7 @@
       modalRoot.innerHTML = '';
       return;
     }
-    if (sheet.classList.contains('is-collapsing')) return;
-
-    sheet.classList.add('is-collapsing');
-    backdrop.classList.add('is-collapsing');
-    backdrop.style.pointerEvents = 'none';
+    if (sheet.classList.contains('is-collapsing') || sheet.dataset.transitioning === 'closing') return;
 
     let finished = false;
     const finish = () => {
@@ -914,6 +1063,14 @@
       finished = true;
       if (modalRoot.contains(backdrop)) modalRoot.innerHTML = '';
     };
+
+    sheet.dataset.transitioning = 'closing';
+    if (animateNowPlayingIntoMini(sheet, backdrop, finish)) return;
+
+    sheet.classList.add('is-collapsing');
+    backdrop.classList.add('is-collapsing');
+    backdrop.style.pointerEvents = 'none';
+
     const handleAnimationEnd = (event) => {
       if (event.target === sheet) finish();
     };
@@ -1869,7 +2026,8 @@
   function ratioFromScrubPointer(clientX, scrub) {
     if (!scrub) return 0;
     const deltaX = Number(clientX) - scrub.startClientX;
-    return Math.max(0, Math.min(1, scrub.startRatio - (deltaX / Math.max(1, scrub.width))));
+    const weightedWidth = Math.max(1, scrub.width * SCRUB_DRAG_WEIGHT);
+    return Math.max(0, Math.min(1, scrub.startRatio - (deltaX / weightedWidth)));
   }
 
   function paintScrubPreview(ratio) {
@@ -1915,6 +2073,7 @@
       startClientX: event.clientX,
       width: Math.max(1, scrubBounds.width),
       pendingClientX: event.clientX,
+      maxDelta: 0,
       frame: 0
     };
 
@@ -1934,6 +2093,7 @@
     const scrub = runtime.scrub;
     if (!scrub || scrub.pointerId !== event.pointerId) return;
     event.preventDefault();
+    scrub.maxDelta = Math.max(scrub.maxDelta || 0, Math.abs(event.clientX - scrub.startClientX));
     scheduleScrubPreview(event.clientX);
   }
 
@@ -1943,20 +2103,28 @@
     event.preventDefault();
 
     if (scrub.frame) cancelAnimationFrame(scrub.frame);
-    const finalRatio = event.type === 'pointercancel'
-      ? scrub.previewRatio
-      : ratioFromScrubPointer(event.clientX, scrub);
+    const pointerDelta = Math.abs(Number(event.clientX) - scrub.startClientX);
+    const isDockTap = event.type !== 'pointercancel'
+      && scrub.surface === 'dock'
+      && Math.max(scrub.maxDelta || 0, pointerDelta) <= SCRUB_TAP_THRESHOLD;
+    const finalRatio = isDockTap
+      ? scrub.startRatio
+      : event.type === 'pointercancel'
+        ? scrub.previewRatio
+        : ratioFromScrubPointer(event.clientX, scrub);
     scrub.previewRatio = finalRatio;
     updatePlayerDom();
     updateNowPlayingModal();
 
-    const targetTime = finalRatio * audio.duration;
-    if (Number.isFinite(targetTime)) {
-      try {
-        if (typeof audio.fastSeek === 'function') audio.fastSeek(targetTime);
-        else audio.currentTime = targetTime;
-      } catch (_) {
-        audio.currentTime = targetTime;
+    if (!isDockTap) {
+      const targetTime = finalRatio * audio.duration;
+      if (Number.isFinite(targetTime)) {
+        try {
+          if (typeof audio.fastSeek === 'function') audio.fastSeek(targetTime);
+          else audio.currentTime = targetTime;
+        } catch (_) {
+          audio.currentTime = targetTime;
+        }
       }
     }
 
@@ -1973,6 +2141,7 @@
     if (scrub.wasPlaying && runtime.playbackDesired) {
       void setPlaybackState(true, { showError: false });
     }
+    if (isDockTap) requestAnimationFrame(openNowPlayingModal);
   }
 
   function startPlaybackUiLoop() {
@@ -2104,8 +2273,12 @@
       event.stopPropagation();
       return;
     }
+    const miniPlayer = event.target.closest('.player-dock.visible');
     const target = event.target.closest('[data-action]');
-    if (!target) return;
+    if (!target) {
+      if (miniPlayer) openNowPlayingModal();
+      return;
+    }
     const action = target.dataset.action;
     const playlistId = target.dataset.playlistId;
     const trackId = target.dataset.trackId;
@@ -2128,6 +2301,10 @@
       case 'share-track': shareCurrentTrack(); break;
       case 'close-modal': closeModal(); break;
       default: break;
+    }
+
+    if (miniPlayer && action !== 'open-now-playing') {
+      requestAnimationFrame(openNowPlayingModal);
     }
   }
 
