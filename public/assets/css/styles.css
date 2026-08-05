@@ -2874,3 +2874,139 @@ html[data-theme="light"] .repeat-mode-close {
     animation-duration: .01ms !important;
   }
 }
+
+/* Accent-colored names, song titles, and button foregrounds. */
+.playlist-name,
+.playlist-title,
+.player-context,
+.track-title,
+.player-track,
+.now-playing-title,
+.search-result-title {
+  color: var(--accent);
+}
+
+/* Keep the full-size song modal playlist subtitle neutral. */
+.now-playing-context {
+  color: var(--muted);
+}
+
+.track-row.unavailable .track-title {
+  color: #c6c6c8;
+}
+
+button:not(.danger):not(.accent-color-swatch):not(.color-mode-toggle):not(.repeat-mode-option):not(.now-playing-repeat) {
+  color: var(--accent);
+}
+
+.action-button.primary,
+.big-play {
+  background: var(--surface-2);
+  color: var(--accent);
+}
+
+/* Asset masks allow uploaded icons to follow currentColor exactly. */
+.user-icon {
+  width: 25px;
+  height: 25px;
+  -webkit-mask-image: url("../icons/user.svg");
+  mask-image: url("../icons/user.svg");
+}
+
+.add-icon {
+  width: 46px;
+  height: 46px;
+  -webkit-mask-image: url("../icons/add.svg");
+  mask-image: url("../icons/add.svg");
+}
+
+.add-tracks .add-icon {
+  width: 23px;
+  height: 23px;
+  flex: 0 0 23px;
+}
+
+.repeat-icon {
+  -webkit-mask-image: url("../icons/repeat.svg");
+  mask-image: url("../icons/repeat.svg");
+}
+
+.repeat-one-icon {
+  -webkit-mask-image: url("../icons/repeat_one.svg");
+  mask-image: url("../icons/repeat_one.svg");
+}
+
+.shuffle-icon {
+  -webkit-mask-image: url("../icons/shuffle.svg");
+  mask-image: url("../icons/shuffle.svg");
+}
+
+.eye-icon {
+  -webkit-mask-image: url("../icons/eye.svg");
+  mask-image: url("../icons/eye.svg");
+}
+
+.now-playing-share .eye-icon,
+.now-playing-repeat .repeat-icon,
+.now-playing-repeat .repeat-one-icon,
+.now-playing-repeat .shuffle-icon,
+.repeat-mode-option .repeat-icon,
+.repeat-mode-option .repeat-one-icon,
+.repeat-mode-option .shuffle-icon {
+  width: 31px;
+  height: 31px;
+}
+
+.now-playing-share .eye-icon {
+  width: 28px;
+  height: 28px;
+}
+
+/* Inactive playback-mode icons stay neutral; active mode uses the accent. */
+.now-playing-repeat {
+  color: var(--text);
+}
+
+.now-playing-repeat.active,
+.repeat-mode-option.is-active {
+  color: var(--accent);
+}
+
+.repeat-mode-option:not(.is-active):not(.repeat-mode-close) {
+  color: #fff;
+}
+
+html[data-theme="light"] .repeat-mode-option:not(.is-active):not(.repeat-mode-close) {
+  color: #202024;
+}
+
+/* Solid mini-player control with no gradient. */
+.player-toggle {
+  background: var(--surface-2) !important;
+  color: var(--accent) !important;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+/* Reduce compact and full modal waveform height by exactly 50%. */
+.player-dock .waveform,
+.player-dock.is-scrubbing .waveform,
+body.home-view .player-dock .waveform,
+body.home-view .player-dock.is-scrubbing .waveform {
+  height: 27px !important;
+  min-height: 27px !important;
+}
+
+.now-playing-waveform,
+.now-playing-modal.is-scrubbing .now-playing-waveform {
+  height: 38px !important;
+  min-height: 38px !important;
+}
+
+@media (max-width: 620px) {
+  .now-playing-waveform,
+  .now-playing-modal.is-scrubbing .now-playing-waveform {
+    height: 32px !important;
+    min-height: 32px !important;
+  }
+}
+

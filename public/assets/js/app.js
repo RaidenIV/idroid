@@ -20,22 +20,22 @@
 
   const icons = {
     search: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-3.5-3.5"></path></svg>',
-    user: '<img class="asset-icon" src="./assets/icons/user.svg" alt="">',
+    user: '<span class="masked-icon user-icon" aria-hidden="true"></span>',
     bell: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path><path d="M10 21h4"></path></svg>',
     back: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>',
-    plus: '<img class="asset-icon" src="./assets/icons/add.svg" alt="">',
+    plus: '<span class="masked-icon add-icon" aria-hidden="true"></span>',
     play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"></path></svg>',
     pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"></path></svg>',
     kebab: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg>',
     lock: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>',
     local: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="m8 12 4 4 4-4M12 8v8"></path></svg>',
     linkOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 13.5 8 16a4 4 0 0 1-5.7-5.6l3-3a4 4 0 0 1 5.6 0"></path><path d="m13.5 10.5 2.5-2.5a4 4 0 0 1 5.7 5.6l-3 3a4 4 0 0 1-5.6 0"></path><path d="m3 3 18 18"></path></svg>',
-    share: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V3"></path><path d="m7 8 5-5 5 5"></path><path d="M5 12v8h14v-8"></path></svg>',
+    eye: '<span class="masked-icon eye-icon" aria-hidden="true"></span>',
     previous: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="3" height="14" rx="1"></rect><path d="m20 5-11 7 11 7z"></path></svg>',
     next: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="17" y="5" width="3" height="14" rx="1"></rect><path d="m4 5 11 7-11 7z"></path></svg>',
-    repeat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2.5 21 6l-4 3.5"></path><path d="M3 11V9a3 3 0 0 1 3-3h15"></path><path d="m7 21.5-4-3.5L7 14.5"></path><path d="M21 13v2a3 3 0 0 1-3 3H3"></path></svg>',
-    repeatOne: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2.5 21 6l-4 3.5"></path><path d="M3 11V9a3 3 0 0 1 3-3h15"></path><path d="m7 21.5-4-3.5L7 14.5"></path><path d="M21 13v2a3 3 0 0 1-3 3H3"></path><path d="M12 10v6"></path><path d="m10.5 11.5 1.5-1.5"></path></svg>',
-    shuffle: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5"></path><path d="m21 3-7.5 7.5"></path><path d="M3 7h3.5c2.2 0 3.4 1.2 4.6 3"></path><path d="M16 16h5v5"></path><path d="m21 21-7.5-7.5"></path><path d="M3 17h3.5c2.2 0 3.4-1.2 4.6-3"></path></svg>',
+    repeat: '<span class="masked-icon repeat-icon" aria-hidden="true"></span>',
+    repeatOne: '<span class="masked-icon repeat-one-icon" aria-hidden="true"></span>',
+    shuffle: '<span class="masked-icon shuffle-icon" aria-hidden="true"></span>',
     pencil: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z"></path><path d="m14 7 3 3"></path></svg>',
     trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14"></path></svg>',
     delete: '<span class="masked-icon delete-icon" aria-hidden="true"></span>',
@@ -564,6 +564,12 @@
     return waveformMarkup(track);
   }
 
+  function repeatModeIcon(mode) {
+    if (mode === 'shuffle') return icons.shuffle;
+    if (mode === 'one') return icons.repeatOne;
+    return icons.repeat;
+  }
+
   function setRepeatMode(mode) {
     const allowed = new Set(['off', 'all', 'one', 'shuffle']);
     runtime.repeatMode = allowed.has(mode) ? mode : 'off';
@@ -622,12 +628,12 @@
           <span class="now-playing-current">0:00</span><span aria-hidden="true">/</span><span class="now-playing-duration">0:00</span>
         </div>
         <div class="now-playing-controls">
-          <button class="now-playing-control now-playing-share" type="button" aria-label="Share track information">${icons.share}</button>
+          <button class="now-playing-control now-playing-share" type="button" aria-label="Share track information">${icons.eye}</button>
           <button class="now-playing-control now-playing-previous" type="button" aria-label="Previous track">${icons.previous}</button>
           <button class="now-playing-control now-playing-toggle" type="button" aria-label="${audio.paused ? 'Play' : 'Pause'}">${audio.paused ? icons.play : icons.pause}</button>
           <button class="now-playing-control now-playing-next" type="button" aria-label="Next track">${icons.next}</button>
           <div class="repeat-control-wrap">
-            <button class="now-playing-control now-playing-repeat ${runtime.repeatMode !== 'off' ? 'active' : ''}" type="button" aria-label="Choose playback mode" aria-haspopup="menu" aria-expanded="false">${icons.repeat}</button>
+            <button class="now-playing-control now-playing-repeat ${runtime.repeatMode !== 'off' ? 'active' : ''}" type="button" aria-label="Choose playback mode" aria-haspopup="menu" aria-expanded="false">${repeatModeIcon(runtime.repeatMode)}</button>
             <div class="repeat-mode-menu" role="menu" aria-label="Playback mode" aria-hidden="true">
               <button class="repeat-mode-option" type="button" role="menuitemradio" data-repeat-mode="shuffle" aria-checked="${runtime.repeatMode === 'shuffle'}" aria-label="Shuffle">${icons.shuffle}</button>
               <button class="repeat-mode-option" type="button" role="menuitemradio" data-repeat-mode="one" aria-checked="${runtime.repeatMode === 'one'}" aria-label="Repeat one">${icons.repeatOne}</button>
@@ -696,6 +702,7 @@
     if (repeat) {
       const active = runtime.repeatMode !== 'off';
       repeat.classList.toggle('active', active);
+      repeat.innerHTML = repeatModeIcon(runtime.repeatMode);
       repeat.setAttribute('aria-label', active ? `Playback mode: ${runtime.repeatMode}` : 'Choose playback mode');
     }
     modal.querySelectorAll('[data-repeat-mode]').forEach((button) => {

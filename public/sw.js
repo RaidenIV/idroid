@@ -1,4 +1,4 @@
-const CACHE_NAME = 'idroid-shell-v15';
+const CACHE_NAME = 'idroid-shell-v16';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -10,7 +10,11 @@ const APP_SHELL = [
   '/assets/icons/user.svg',
   '/assets/icons/add.svg',
   '/assets/icons/down.svg',
-  '/assets/icons/delete.svg'
+  '/assets/icons/delete.svg',
+  '/assets/icons/repeat.svg',
+  '/assets/icons/repeat_one.svg',
+  '/assets/icons/shuffle.svg',
+  '/assets/icons/eye.svg'
 ];
 
 self.addEventListener('install', (event) => {
