@@ -1,0 +1,19 @@
+{
+  "name": "iDroid Music Player",
+  "short_name": "iDroid",
+  "description": "A personal music player with permanent Railway storage.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#151515",
+  "theme_color": "#151515",
+  "orientation": "portrait-primary",
+  "icons": [
+    {
+      "src": "./assets/images/music.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
