@@ -25,7 +25,7 @@
     back: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"></path></svg>',
     plus: '<span class="masked-icon add-icon" aria-hidden="true"></span>',
     play: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"></path></svg>',
-    pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"></path></svg>',
+    pause: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"></path></svg>',
     kebab: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8"></circle><circle cx="12" cy="12" r="1.8"></circle><circle cx="19" cy="12" r="1.8"></circle></svg>',
     lock: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2"></rect><path d="M8 10V7a4 4 0 0 1 8 0v3"></path></svg>',
     local: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="m8 12 4 4 4-4M12 8v8"></path></svg>',
@@ -106,7 +106,7 @@
   }
 
   const WAVEFORM_SAMPLE_COUNT = 256;
-  const WAVEFORM_MIN_VALUE = 0.035;
+  const WAVEFORM_MIN_VALUE = 0.018;
 
   const runtime = {
     view: 'home',
@@ -151,7 +151,7 @@
       profile: {
         name: 'RaidenLabs',
         avatar: null,
-        joinedAt: '2025-05-01'
+        joinedAt: new Date().toISOString().slice(0, 10)
       },
       playlists: [
         { id: createId('playlist'), name: 'remix.exe', cover: null, gradient: 0, createdAt: new Date().toISOString(), tracks: [] },
@@ -170,6 +170,35 @@
       },
       playlists: []
     };
+  }
+
+  const LEGACY_JOINED_DATES = new Set(['2025-05-01']);
+
+  function joinedDateTimestamp(value) {
+    const timestamp = Date.parse(value || '');
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+
+  function inferJoinedAt(profileValue, playlists = [], fallbackValue = new Date().toISOString()) {
+    const candidates = [];
+    const profileTimestamp = joinedDateTimestamp(profileValue);
+    if (profileTimestamp != null && !LEGACY_JOINED_DATES.has(String(profileValue).slice(0, 10))) {
+      candidates.push(profileTimestamp);
+    }
+
+    playlists.forEach((playlist) => {
+      const playlistTimestamp = joinedDateTimestamp(playlist?.createdAt);
+      if (playlistTimestamp != null) candidates.push(playlistTimestamp);
+      (playlist?.tracks || []).forEach((track) => {
+        const trackTimestamp = joinedDateTimestamp(track?.addedAt);
+        if (trackTimestamp != null) candidates.push(trackTimestamp);
+      });
+    });
+
+    const fallbackTimestamp = joinedDateTimestamp(fallbackValue);
+    if (fallbackTimestamp != null) candidates.push(fallbackTimestamp);
+    const timestamp = candidates.length ? Math.min(...candidates) : Date.now();
+    return new Date(timestamp).toISOString().slice(0, 10);
   }
 
   function normalizeWaveform(value) {
@@ -221,14 +250,34 @@
     });
   }
 
+  function enhanceWaveformContrast(samples) {
+    if (!samples.length) return [];
+    const sorted = [...samples].sort((a, b) => a - b);
+    const percentile = (ratio) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * ratio)))] || 0;
+    const floor = percentile(0.08);
+    const ceiling = Math.max(percentile(0.985), floor + 0.00001);
+    const stretched = samples.map((sample) => {
+      const normalized = Math.max(0, Math.min(1, (sample - floor) / (ceiling - floor)));
+      return Math.pow(normalized, 1.24);
+    });
+
+    return stretched.map((sample, index) => {
+      const left = stretched[Math.max(0, index - 1)];
+      const right = stretched[Math.min(stretched.length - 1, index + 1)];
+      const localAverage = (left + sample + right) / 3;
+      const detailed = sample + (sample - localAverage) * 0.28;
+      return Math.max(0, Math.min(1, detailed));
+    });
+  }
+
   function waveformSamplesForTrack(track, targetCount = WAVEFORM_SAMPLE_COUNT) {
     const samples = resampleWaveform(track?.waveform, targetCount);
-    return samples.length ? samples : fallbackWaveform(track, targetCount);
+    return enhanceWaveformContrast(samples.length ? samples : fallbackWaveform(track, targetCount));
   }
 
   function waveformMarkup(track, targetCount = WAVEFORM_SAMPLE_COUNT) {
     return waveformSamplesForTrack(track, targetCount).map((sample) => {
-      const height = Math.round((WAVEFORM_MIN_VALUE + Math.pow(sample, 0.82) * (1 - WAVEFORM_MIN_VALUE)) * 100);
+      const height = Math.round((WAVEFORM_MIN_VALUE + Math.pow(sample, 1.18) * (1 - WAVEFORM_MIN_VALUE)) * 100);
       return `<span class="wave-bar" style="height:${height}%"></span>`;
     }).join('');
   }
@@ -278,6 +327,7 @@
       playlist.gradient ??= index % coverGradients.length;
       playlist.tracks = Array.isArray(playlist.tracks) ? playlist.tracks.map(cleanTrackMetadata) : [];
     });
+    saved.profile.joinedAt = inferJoinedAt(saved.profile.joinedAt, saved.playlists);
     return saved;
   }
 
@@ -475,7 +525,7 @@
       <main class="screen user-screen ${runtime.transition === 'forward' ? 'screen-enter-forward' : runtime.transition === 'back' ? 'screen-enter-back' : ''}">
         <header class="topbar ${runtime.transition === 'forward' ? 'page-enter-forward' : runtime.transition === 'back' ? 'page-enter-back' : ''}">
           <button class="icon-button" type="button" data-action="back-home" aria-label="Back">${icons.back}</button>
-          <button class="icon-button" type="button" data-action="user-menu" aria-label="Account options">${icons.kebab}</button>
+          <button class="icon-button kebab-button profile-kebab" type="button" data-action="user-menu" aria-label="Account options">${icons.kebab}</button>
         </header>
 
         <section class="profile-card">
@@ -1296,6 +1346,7 @@
       const stride = Math.max(1, Math.floor((end - start) / 640));
       let peak = 0;
       let energy = 0;
+      let absoluteTotal = 0;
       let points = 0;
 
       for (let channelIndex = 0; channelIndex < channels; channelIndex += 1) {
@@ -1304,19 +1355,23 @@
           const amplitude = Math.abs(channel[frame] || 0);
           peak = Math.max(peak, amplitude);
           energy += amplitude * amplitude;
+          absoluteTotal += amplitude;
           points += 1;
         }
       }
 
       const rms = points ? Math.sqrt(energy / points) : 0;
-      samples.push(peak * 0.72 + rms * 0.28);
+      const meanAbsolute = points ? absoluteTotal / points : 0;
+      samples.push(rms * 0.72 + meanAbsolute * 0.20 + peak * 0.08);
     }
 
     const sorted = [...samples].sort((a, b) => a - b);
-    const reference = sorted[Math.max(0, Math.floor(sorted.length * 0.97) - 1)] || Math.max(...samples, 1);
+    const percentile = (ratio) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * ratio)))] || 0;
+    const floor = percentile(0.06);
+    const ceiling = Math.max(percentile(0.985), floor + 0.00001);
     return samples.map((sample) => {
-      const normalized = Math.max(0, Math.min(1, sample / Math.max(reference, 0.00001)));
-      return Math.round(Math.pow(normalized, 0.78) * 1000) / 1000;
+      const normalized = Math.max(0, Math.min(1, (sample - floor) / (ceiling - floor)));
+      return Math.round(Math.pow(normalized, 1.18) * 1000) / 1000;
     });
   }
 

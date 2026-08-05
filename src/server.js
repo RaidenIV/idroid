@@ -34,14 +34,14 @@ function createId(prefix = 'id') {
   return `${prefix}-${Date.now().toString(36)}-${crypto.randomBytes(5).toString('hex')}`;
 }
 
-function defaultState() {
+function defaultState(joinedAt = new Date().toISOString()) {
   const now = new Date().toISOString();
   return {
     version: 3,
     profile: {
       name: 'RaidenLabs',
       avatar: null,
-      joinedAt: '2025-05-01'
+      joinedAt: new Date(joinedAt).toISOString().slice(0, 10)
     },
     playlists: [
       { id: createId('playlist'), name: 'remix.exe', cover: null, gradient: 0, createdAt: now, tracks: [] },
@@ -71,6 +71,34 @@ function sanitizeDataUrl(value) {
   if (value == null || value === '') return null;
   const string = safeString(value, '', 2_500_000);
   return /^data:image\/(?:png|jpe?g|webp);base64,/i.test(string) ? string : null;
+}
+
+const LEGACY_JOINED_DATES = new Set(['2025-05-01']);
+
+function dateTimestamp(value) {
+  const timestamp = Date.parse(value || '');
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function inferJoinedAt(profileValue, playlists = [], fallbackValue = new Date().toISOString()) {
+  const candidates = [];
+  const profileTimestamp = dateTimestamp(profileValue);
+  if (profileTimestamp != null && !LEGACY_JOINED_DATES.has(String(profileValue).slice(0, 10))) {
+    candidates.push(profileTimestamp);
+  }
+
+  for (const playlist of playlists) {
+    const playlistTimestamp = dateTimestamp(playlist?.createdAt);
+    if (playlistTimestamp != null) candidates.push(playlistTimestamp);
+    for (const track of playlist?.tracks || []) {
+      const trackTimestamp = dateTimestamp(track?.addedAt);
+      if (trackTimestamp != null) candidates.push(trackTimestamp);
+    }
+  }
+
+  const fallbackTimestamp = dateTimestamp(fallbackValue);
+  if (fallbackTimestamp != null) candidates.push(fallbackTimestamp);
+  return new Date(candidates.length ? Math.min(...candidates) : Date.now()).toISOString().slice(0, 10);
 }
 
 function sanitizeWaveform(value) {
@@ -112,7 +140,7 @@ function sanitizeState(candidate, previousState = state) {
     profile: {
       name: safeString(profile?.name, fallback.profile.name, 60).trim() || fallback.profile.name,
       avatar: sanitizeDataUrl(profile?.avatar),
-      joinedAt: safeString(profile?.joinedAt, fallback.profile.joinedAt, 32)
+      joinedAt: inferJoinedAt(profile?.joinedAt, playlists, fallback.profile.joinedAt)
     },
     playlists: playlists.slice(0, 500).map((playlist, index) => ({
       id: safeString(playlist?.id, createId('playlist'), 160),
@@ -135,8 +163,18 @@ async function ensureStorage() {
   ]);
 
   try {
-    const raw = await fsp.readFile(STATE_FILE, 'utf8');
-    state = sanitizeState(JSON.parse(raw), defaultState());
+    const [raw, stats] = await Promise.all([
+      fsp.readFile(STATE_FILE, 'utf8'),
+      fsp.stat(STATE_FILE).catch(() => null)
+    ]);
+    const parsed = JSON.parse(raw);
+    const stateFileCreatedAt = stats?.birthtimeMs > 0
+      ? stats.birthtime.toISOString()
+      : stats?.ctimeMs > 0
+        ? stats.ctime.toISOString()
+        : new Date().toISOString();
+    state = sanitizeState(parsed, defaultState(stateFileCreatedAt));
+    if (parsed?.profile?.joinedAt !== state.profile.joinedAt) await writeState();
   } catch (error) {
     if (error.code !== 'ENOENT') console.warn('Could not read saved state; creating a clean state.', error);
     state = defaultState();
