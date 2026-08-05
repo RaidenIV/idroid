@@ -2,7 +2,18 @@
   'use strict';
 
   const app = document.getElementById('app');
-  const audio = document.getElementById('audio');
+  const primaryAudio = document.getElementById('audio');
+  let standbyAudio = document.getElementById('audioStandby');
+  if (!standbyAudio) {
+    standbyAudio = document.createElement('audio');
+    standbyAudio.id = 'audioStandby';
+    standbyAudio.preload = 'auto';
+    standbyAudio.setAttribute('playsinline', '');
+    standbyAudio.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(standbyAudio);
+  }
+  let audio = primaryAudio;
+  const audioPlayers = [primaryAudio, standbyAudio];
   const trackPicker = document.getElementById('trackPicker');
   const modalRoot = document.getElementById('modalRoot');
   const toastRoot = document.getElementById('toastRoot');
@@ -56,7 +67,10 @@
     drag: null,
     navSwipe: null,
     transition: null,
-    warmedTracks: new Set(),
+    preloadedPlaylistId: null,
+    preloadedTrackId: null,
+    preloadToken: 0,
+    handoffInProgress: false,
     uploadToast: null,
     scrub: null,
     repeatOne: false,
@@ -520,6 +534,7 @@
     modalRoot.querySelector('.now-playing-next')?.addEventListener('click', () => playNext(1));
     modalRoot.querySelector('.now-playing-repeat')?.addEventListener('click', () => {
       runtime.repeatOne = !runtime.repeatOne;
+      preloadNextTrack();
       updateNowPlayingModal();
     });
     updateNowPlayingModal();
@@ -1193,6 +1208,15 @@
     const analysis = new Promise((resolve) => {
       window.setTimeout(async () => {
         try {
+          const waitDeadline = Date.now() + 6000;
+          while (
+            !audio.paused
+            && runtime.queue.length > 1
+            && standbyAudio.readyState < HTMLMediaElement.HAVE_FUTURE_DATA
+            && Date.now() < waitDeadline
+          ) {
+            await new Promise((resolveWait) => window.setTimeout(resolveWait, 250));
+          }
           const response = await fetch(trackStreamUrl(track), { cache: 'force-cache' });
           if (!response.ok) throw new Error(`Waveform request failed (${response.status}).`);
           const result = await analyzeAudioArrayBuffer(await response.arrayBuffer());
@@ -1219,20 +1243,152 @@
     return `/api/tracks/${encodeURIComponent(track.id)}/audio?v=${version}`;
   }
 
-  function warmTrack(track) {
-    if (!track?.storageName || runtime.warmedTracks.has(track.id)) return;
-    runtime.warmedTracks.add(track.id);
-    fetch(trackStreamUrl(track), {
-      headers: { Range: 'bytes=0-262143' },
-      cache: 'force-cache'
-    }).catch(() => {
-      runtime.warmedTracks.delete(track.id);
+  function resetAudioElement(element) {
+    if (!element) return;
+    try { element.pause(); } catch (_) { /* The element may not have started. */ }
+    element.removeAttribute('src');
+    delete element.dataset.trackId;
+    delete element.dataset.playlistId;
+    element.preload = 'auto';
+    try { element.load(); } catch (_) { /* Ignore media reset failures. */ }
+  }
+
+  function assignAudioSource(element, playlistId, track) {
+    if (!element || !track?.storageName) return;
+    const alreadyAssigned = element.dataset.trackId === track.id
+      && element.dataset.playlistId === playlistId
+      && element.getAttribute('src');
+    if (alreadyAssigned) return;
+    element.preload = 'auto';
+    element.src = trackStreamUrl(track);
+    element.dataset.trackId = track.id;
+    element.dataset.playlistId = playlistId;
+    element.load();
+  }
+
+  function audioElementMatches(element, playlistId, trackId) {
+    return Boolean(
+      element
+      && element.dataset.playlistId === playlistId
+      && element.dataset.trackId === trackId
+      && element.getAttribute('src')
+    );
+  }
+
+  function standbyMatches(playlistId, trackId) {
+    return audioElementMatches(standbyAudio, playlistId, trackId);
+  }
+
+  function queuedTrackEntry(offset = 1) {
+    if (!runtime.queue.length || !runtime.activePlaylistId) return null;
+    const index = (runtime.queueIndex + offset + runtime.queue.length) % runtime.queue.length;
+    const trackId = runtime.queue[index];
+    const track = getTrack(runtime.activePlaylistId, trackId);
+    return track?.storageName
+      ? { playlistId: runtime.activePlaylistId, trackId, track, index }
+      : null;
+  }
+
+  function prepareStandbyTrack(playlistId, trackId) {
+    const track = getTrack(playlistId, trackId);
+    if (!track?.storageName || !standbyAudio) return Promise.resolve(false);
+    if (trackId === runtime.activeTrackId && playlistId === runtime.activePlaylistId) return Promise.resolve(false);
+    if (standbyMatches(playlistId, trackId)) return Promise.resolve(true);
+
+    const preloadToken = ++runtime.preloadToken;
+    const preloadElement = standbyAudio;
+    runtime.preloadedPlaylistId = playlistId;
+    runtime.preloadedTrackId = trackId;
+    resetAudioElement(preloadElement);
+    assignAudioSource(preloadElement, playlistId, track);
+
+    return new Promise((resolve) => {
+      let settled = false;
+      let timeoutId = 0;
+      const finish = (ready) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeoutId);
+        preloadElement.removeEventListener('canplay', handleCanPlay);
+        preloadElement.removeEventListener('error', handleError);
+        if (
+          preloadToken !== runtime.preloadToken
+          || preloadElement !== standbyAudio
+          || !audioElementMatches(preloadElement, playlistId, trackId)
+        ) {
+          resolve(false);
+          return;
+        }
+        resolve(ready);
+      };
+      const handleCanPlay = () => finish(true);
+      const handleError = () => finish(false);
+
+      if (preloadElement.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+        finish(true);
+        return;
+      }
+
+      preloadElement.addEventListener('canplay', handleCanPlay, { once: true });
+      preloadElement.addEventListener('error', handleError, { once: true });
+      timeoutId = window.setTimeout(
+        () => finish(preloadElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA),
+        12000
+      );
     });
   }
 
+  function preloadNextTrack() {
+    if (runtime.repeatOne || runtime.queue.length < 2) {
+      runtime.preloadedPlaylistId = null;
+      runtime.preloadedTrackId = null;
+      runtime.preloadToken += 1;
+      resetAudioElement(standbyAudio);
+      return;
+    }
+    const next = queuedTrackEntry(1);
+    if (next) void prepareStandbyTrack(next.playlistId, next.trackId);
+  }
+
+  function warmTrack(track, playlistId = null) {
+    if (!track?.storageName) return;
+    const resolvedPlaylistId = playlistId
+      || state.playlists.find((playlist) => playlist.tracks.some((item) => item.id === track.id))?.id;
+    if (!resolvedPlaylistId) return;
+
+    if (runtime.activeTrackId) {
+      const next = queuedTrackEntry(1);
+      if (!next || next.trackId !== track.id || next.playlistId !== resolvedPlaylistId) return;
+    }
+    void prepareStandbyTrack(resolvedPlaylistId, track.id);
+  }
+
   function warmPlaylistStart(playlistId) {
+    if (runtime.activeTrackId) return;
     const firstTrack = getPlaylist(playlistId)?.tracks.find((track) => track.storageName);
-    if (firstTrack) warmTrack(firstTrack);
+    if (firstTrack) warmTrack(firstTrack, playlistId);
+  }
+
+  function takePreparedAudio(playlistId, trackId) {
+    if (!standbyMatches(playlistId, trackId)) return null;
+
+    const previousAudio = audio;
+    const preparedAudio = standbyAudio;
+    audio = preparedAudio;
+    standbyAudio = previousAudio;
+    previousAudio.pause();
+
+    runtime.preloadToken += 1;
+    runtime.preloadedPlaylistId = null;
+    runtime.preloadedTrackId = null;
+
+    try {
+      if (audio.currentTime > 0.05) audio.currentTime = 0;
+    } catch (_) { /* Some formats do not allow seeking before metadata is ready. */ }
+
+    const playPromise = audio.play();
+    resetAudioElement(standbyAudio);
+    return playPromise;
   }
 
   async function playPlaylist(playlistId) {
@@ -1247,7 +1403,7 @@
     chooseTrackFiles(playlistId);
   }
 
-  async function playTrack(playlistId, trackId) {
+  async function playTrack(playlistId, trackId, options = {}) {
     const playlist = getPlaylist(playlistId);
     const track = getTrack(playlistId, trackId);
     if (!playlist || !track) return;
@@ -1257,7 +1413,12 @@
     }
 
     if (runtime.activeTrackId === trackId && audio.dataset.trackId === trackId) {
-      openNowPlayingModal();
+      if (options.restart) {
+        try { audio.currentTime = 0; } catch (_) { /* Ignore an early seek failure. */ }
+        audio.play().catch(() => showToast('Playback could not start.', true));
+      } else if (options.openIfActive !== false) {
+        openNowPlayingModal();
+      }
       return;
     }
 
@@ -1266,17 +1427,20 @@
     runtime.queue = playlist.tracks.filter((item) => item.storageName).map((item) => item.id);
     runtime.queueIndex = runtime.queue.indexOf(trackId);
 
-    if (audio.dataset.trackId !== trackId) {
-      audio.preload = 'auto';
-      audio.src = trackStreamUrl(track);
-      audio.dataset.trackId = trackId;
-      audio.load();
+    let playPromise = takePreparedAudio(playlistId, trackId);
+    if (!playPromise) {
+      runtime.preloadToken += 1;
+      runtime.preloadedPlaylistId = null;
+      runtime.preloadedTrackId = null;
+      resetAudioElement(standbyAudio);
+      audio.pause();
+      assignAudioSource(audio, playlistId, track);
+      playPromise = audio.play();
     }
 
-    const playPromise = audio.play();
     render();
     updateMediaSession();
-    warmTrack(playlist.tracks.find((item) => item.id === runtime.queue[runtime.queueIndex + 1]));
+    preloadNextTrack();
     ensureTrackWaveform(track);
     try {
       await playPromise;
@@ -1295,10 +1459,13 @@
   }
 
   function stopPlayback() {
-    audio.pause();
-    audio.removeAttribute('src');
-    delete audio.dataset.trackId;
-    audio.load();
+    runtime.preloadToken += 1;
+    audioPlayers.forEach(resetAudioElement);
+    audio = primaryAudio;
+    standbyAudio = audioPlayers.find((element) => element !== audio) || standbyAudio;
+    runtime.preloadedPlaylistId = null;
+    runtime.preloadedTrackId = null;
+    runtime.handoffInProgress = false;
     runtime.activePlaylistId = null;
     runtime.activeTrackId = null;
     runtime.queue = [];
@@ -1308,10 +1475,18 @@
   }
 
   async function playNext(direction = 1) {
-    if (!runtime.queue.length) return;
-    const nextIndex = (runtime.queueIndex + direction + runtime.queue.length) % runtime.queue.length;
-    runtime.queueIndex = nextIndex;
-    await playTrack(runtime.activePlaylistId, runtime.queue[nextIndex]);
+    if (!runtime.queue.length || runtime.handoffInProgress) return;
+    runtime.handoffInProgress = true;
+    try {
+      const nextIndex = (runtime.queueIndex + direction + runtime.queue.length) % runtime.queue.length;
+      const nextTrackId = runtime.queue[nextIndex];
+      await playTrack(runtime.activePlaylistId, nextTrackId, {
+        openIfActive: false,
+        restart: nextTrackId === runtime.activeTrackId
+      });
+    } finally {
+      runtime.handoffInProgress = false;
+    }
   }
 
   function updateWaveformDom(element, ratio, duration) {
@@ -1653,7 +1828,10 @@
   function beginLongPress(event) {
     if (event.button !== undefined && event.button !== 0) return;
     const touchedTrack = event.target.closest('.track-row');
-    if (touchedTrack) warmTrack(getTrack(touchedTrack.dataset.playlistId, touchedTrack.dataset.trackId));
+    if (touchedTrack) warmTrack(
+      getTrack(touchedTrack.dataset.playlistId, touchedTrack.dataset.trackId),
+      touchedTrack.dataset.playlistId
+    );
     if (event.target.closest('.playlist-play, .kebab, .track-main, button:not(.playlist-cover)')) return;
 
     const cover = event.target.closest('.playlist-cover');
@@ -1754,19 +1932,54 @@
     runtime.pickerPlaylistId = null;
   });
 
-  audio.addEventListener('timeupdate', () => { updatePlayerDom(); updateNowPlayingModal(); });
-  audio.addEventListener('durationchange', () => { updatePlayerDom(); updateNowPlayingModal(); });
-  audio.addEventListener('play', () => { updatePlayerDom(); updateNowPlayingModal(); updateMediaSession(); startPlaybackUiLoop(); });
-  audio.addEventListener('pause', () => { updatePlayerDom(); updateNowPlayingModal(); updateMediaSession(); stopPlaybackUiLoop(); });
-  audio.addEventListener('ended', () => {
-    if (runtime.repeatOne) {
-      audio.currentTime = 0;
-      audio.play().catch(() => undefined);
-      return;
-    }
-    playNext(1);
-  });
-  audio.addEventListener('error', () => showToast('This audio format could not be played.', true));
+  function bindAudioPlayer(element) {
+    element.addEventListener('timeupdate', () => {
+      if (element !== audio) return;
+      updatePlayerDom();
+      updateNowPlayingModal();
+    });
+    element.addEventListener('durationchange', () => {
+      if (element !== audio) return;
+      updatePlayerDom();
+      updateNowPlayingModal();
+    });
+    element.addEventListener('play', () => {
+      if (element !== audio) return;
+      updatePlayerDom();
+      updateNowPlayingModal();
+      updateMediaSession();
+      startPlaybackUiLoop();
+      preloadNextTrack();
+    });
+    element.addEventListener('pause', () => {
+      if (element !== audio) return;
+      updatePlayerDom();
+      updateNowPlayingModal();
+      updateMediaSession();
+      stopPlaybackUiLoop();
+    });
+    element.addEventListener('ended', () => {
+      if (element !== audio) return;
+      if (runtime.repeatOne) {
+        audio.currentTime = 0;
+        audio.play().catch(() => undefined);
+        return;
+      }
+      void playNext(1);
+    });
+    element.addEventListener('error', () => {
+      if (element === standbyAudio) {
+        runtime.preloadToken += 1;
+        runtime.preloadedPlaylistId = null;
+        runtime.preloadedTrackId = null;
+        resetAudioElement(standbyAudio);
+        return;
+      }
+      if (element === audio) showToast('This audio format could not be played.', true);
+    });
+  }
+
+  audioPlayers.forEach(bindAudioPlayer);
 
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
