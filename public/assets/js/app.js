@@ -71,6 +71,10 @@
     preloadedTrackId: null,
     preloadToken: 0,
     handoffInProgress: false,
+    playbackCommandId: 0,
+    playbackPending: false,
+    playbackDesired: false,
+    temporaryPause: false,
     uploadToast: null,
     scrub: null,
     repeatOne: false,
@@ -327,7 +331,6 @@
         <div class="playlist-meta">
           <div>
             <div class="playlist-name">${escapeHtml(playlist.name)}</div>
-            <div class="playlist-owner">${escapeHtml(state.profile.name)}</div>
           </div>
           <button class="kebab" type="button" data-action="edit-playlist" data-playlist-id="${playlist.id}" aria-label="Edit ${escapeHtml(playlist.name)}">${icons.kebab}</button>
         </div>
@@ -335,7 +338,7 @@
     `).join('');
 
     return `
-      <header class="topbar home-menu-bar ${runtime.transition === 'back' ? 'page-enter-back' : ''}">
+      <header class="topbar home-menu-bar">
         <h1 class="topbar-title">iDroid</h1>
         <div class="topbar-actions">
           <button class="icon-button" type="button" data-action="search" aria-label="Search">${icons.search}</button>
@@ -346,7 +349,7 @@
         ${playlists ? `<section class="playlist-grid" aria-label="Playlists">${playlists}</section>` : `
           <section class="home-empty"><div><strong>No playlists yet</strong>Tap Add to create your first playlist.</div></section>`}
       </main>
-      <button class="home-add ${runtime.transition === 'back' ? 'page-enter-back' : ''}" type="button" data-action="new-playlist" aria-label="Add playlist">
+      <button class="home-add" type="button" data-action="new-playlist" aria-label="Add playlist">
         ${icons.plus}<span class="home-add-label">Add</span>
       </button>
     `;
@@ -378,7 +381,7 @@
     }).join('');
 
     return `
-      <header class="topbar playlist-menu-bar ${runtime.transition === 'forward' ? 'page-enter-forward' : ''}">
+      <header class="topbar playlist-menu-bar">
         <button class="icon-button" type="button" data-action="back-home" aria-label="Back">${icons.back}</button>
         <div class="topbar-actions">
           <button class="icon-button" type="button" data-action="search" aria-label="Search">${icons.search}</button>
@@ -391,7 +394,7 @@
           <div class="playlist-heading-row">
             <div>
               <h1 class="playlist-title">${escapeHtml(playlist.name)}</h1>
-              <div class="playlist-subtitle">${escapeHtml(state.profile.name)} · ${playlist.tracks.length} ${playlist.tracks.length === 1 ? 'track' : 'tracks'} · ${formatTotalDuration(playlist)}</div>
+              <div class="playlist-subtitle">${playlist.tracks.length} ${playlist.tracks.length === 1 ? 'track' : 'tracks'} · ${formatTotalDuration(playlist)}</div>
             </div>
             <button class="big-play" type="button" data-action="play-playlist" data-playlist-id="${playlist.id}" aria-label="Play playlist">${icons.play}</button>
           </div>
@@ -426,7 +429,6 @@
           <div class="profile-label">
             <div class="avatar-dot">${avatar}</div>
             <div>
-              <div class="profile-name">${escapeHtml(state.profile.name)}</div>
               <div class="profile-date">Joined ${formatJoined(state.profile.joinedAt)}</div>
             </div>
           </div>
@@ -447,7 +449,7 @@
         <button class="player-toggle" type="button" data-action="toggle-play" aria-label="${audio.paused ? 'Play' : 'Pause'}">${audio.paused ? icons.play : icons.pause}</button>
         <button class="player-text" type="button" data-action="open-now-playing">
           <div class="player-track">${track ? escapeHtml(track.title) : 'Nothing playing'}</div>
-          <div class="player-context">${track && playlist ? `${escapeHtml(playlist.name)} · ${escapeHtml(state.profile.name)}` : ''}</div>
+          <div class="player-context">${track && playlist ? escapeHtml(playlist.name) : ''}</div>
         </button>
         <div class="waveform" data-scrubber="dock" data-track-id="${track ? escapeHtml(track.id) : ''}" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
           <div class="waveform-viewport">
@@ -492,7 +494,7 @@
       <section class="now-playing-modal" aria-label="Now playing">
         <div class="now-playing-copy">
           <h2 class="now-playing-title">${escapeHtml(track.title)}</h2>
-          <p class="now-playing-context">${escapeHtml(playlist.name)} · ${escapeHtml(state.profile.name)}</p>
+          <p class="now-playing-context">${escapeHtml(playlist.name)}</p>
         </div>
         <div class="now-playing-cover">${coverMarkup(playlist)}</div>
         <div class="now-playing-waveform" data-scrubber="modal" data-track-id="${escapeHtml(track.id)}" role="slider" aria-label="Playback position" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
@@ -553,7 +555,7 @@
     const title = modal.querySelector('.now-playing-title');
     const context = modal.querySelector('.now-playing-context');
     if (title) title.textContent = track.title;
-    if (context) context.textContent = `${playlist.name} · ${state.profile.name}`;
+    if (context) context.textContent = playlist.name;
 
     const toggle = modal.querySelector('.now-playing-toggle');
     if (toggle) {
@@ -699,8 +701,37 @@
     modalRoot.querySelector('[data-modal-sheet]')?.addEventListener('click', (event) => event.stopPropagation());
   }
 
-  function closeModal() {
-    modalRoot.innerHTML = '';
+  function closeModal(options = {}) {
+    const backdrop = modalRoot.querySelector('.modal-backdrop');
+    const sheet = modalRoot.querySelector('.modal-sheet');
+    const animateNowPlaying = Boolean(
+      !options.immediate
+      && backdrop?.classList.contains('now-playing-backdrop')
+      && sheet?.classList.contains('now-playing-sheet')
+      && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    );
+
+    if (!animateNowPlaying) {
+      modalRoot.innerHTML = '';
+      return;
+    }
+    if (sheet.classList.contains('is-collapsing')) return;
+
+    sheet.classList.add('is-collapsing');
+    backdrop.classList.add('is-collapsing');
+    backdrop.style.pointerEvents = 'none';
+
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      if (modalRoot.contains(backdrop)) modalRoot.innerHTML = '';
+    };
+    const handleAnimationEnd = (event) => {
+      if (event.target === sheet) finish();
+    };
+    sheet.addEventListener('animationend', handleAnimationEnd);
+    window.setTimeout(finish, 420);
   }
 
   function openPlaylistEditor(playlistId = null) {
@@ -808,12 +839,8 @@
     const draft = { avatar: state.profile.avatar };
     openModal(`
       <h2 class="modal-title">Edit Profile</h2>
-      <p class="modal-copy">Update the name and profile picture shown throughout iDroid.</p>
+      <p class="modal-copy">Update the profile picture used by iDroid.</p>
       <div class="form-grid">
-        <div class="field">
-          <label for="profileName">User name</label>
-          <input id="profileName" type="text" maxlength="60" value="${escapeHtml(state.profile.name)}" autocomplete="nickname">
-        </div>
         <div class="field">
           <label for="profileImage">Profile picture</label>
           <label class="file-button" for="profileImage">
@@ -829,10 +856,8 @@
       </div>
     `, true);
 
-    const nameInput = modalRoot.querySelector('#profileName');
     const imageInput = modalRoot.querySelector('#profileImage');
     const status = modalRoot.querySelector('#profileImageStatus');
-    nameInput?.focus();
 
     imageInput?.addEventListener('change', async () => {
       const file = imageInput.files?.[0];
@@ -849,13 +874,6 @@
 
     modalRoot.querySelector('[data-profile-cancel]')?.addEventListener('click', closeModal);
     modalRoot.querySelector('[data-profile-save]')?.addEventListener('click', () => {
-      const name = nameInput.value.trim();
-      if (!name) {
-        nameInput.focus();
-        showToast('Enter a user name.', true);
-        return;
-      }
-      state.profile.name = name;
       state.profile.avatar = draft.avatar;
       saveState();
       closeModal();
@@ -1370,7 +1388,7 @@
   }
 
   function takePreparedAudio(playlistId, trackId) {
-    if (!standbyMatches(playlistId, trackId)) return null;
+    if (!standbyMatches(playlistId, trackId)) return false;
 
     const previousAudio = audio;
     const preparedAudio = standbyAudio;
@@ -1386,9 +1404,8 @@
       if (audio.currentTime > 0.05) audio.currentTime = 0;
     } catch (_) { /* Some formats do not allow seeking before metadata is ready. */ }
 
-    const playPromise = audio.play();
     resetAudioElement(standbyAudio);
-    return playPromise;
+    return true;
   }
 
   async function playPlaylist(playlistId) {
@@ -1403,6 +1420,74 @@
     chooseTrackFiles(playlistId);
   }
 
+  function playbackLooksActive() {
+    return Boolean(
+      runtime.playbackDesired
+      || runtime.playbackPending
+      || (audio && !audio.paused && !audio.ended)
+    );
+  }
+
+  async function setPlaybackState(shouldPlay, options = {}) {
+    if (!runtime.activeTrackId || !audio) return false;
+
+    const commandId = ++runtime.playbackCommandId;
+    const targetAudio = audio;
+    runtime.playbackDesired = Boolean(shouldPlay);
+    runtime.playbackPending = Boolean(shouldPlay);
+
+    if (!shouldPlay) {
+      runtime.playbackDesired = false;
+      runtime.playbackPending = false;
+      audioPlayers.forEach((element) => {
+        if (!element.paused) {
+          try { element.pause(); } catch (_) { /* Ignore media pause failures. */ }
+        }
+      });
+      updatePlayerDom();
+      updateNowPlayingModal();
+      updateMediaSession();
+      return true;
+    }
+
+    audioPlayers.forEach((element) => {
+      if (element !== targetAudio && !element.paused) {
+        try { element.pause(); } catch (_) { /* Keep only the active player audible. */ }
+      }
+    });
+
+    try {
+      const playResult = targetAudio.play();
+      if (playResult && typeof playResult.then === 'function') await playResult;
+
+      if (
+        commandId !== runtime.playbackCommandId
+        || targetAudio !== audio
+        || !runtime.playbackDesired
+      ) {
+        try { targetAudio.pause(); } catch (_) { /* A newer command superseded this play. */ }
+        return false;
+      }
+
+      runtime.playbackPending = false;
+      updatePlayerDom();
+      updateNowPlayingModal();
+      updateMediaSession();
+      return true;
+    } catch (error) {
+      if (commandId === runtime.playbackCommandId) {
+        runtime.playbackPending = false;
+        runtime.playbackDesired = false;
+      }
+      console.warn('Playback command failed.', error);
+      updatePlayerDom();
+      updateNowPlayingModal();
+      updateMediaSession();
+      if (options.showError !== false) showToast('Playback could not start.', true);
+      return false;
+    }
+  }
+
   async function playTrack(playlistId, trackId, options = {}) {
     const playlist = getPlaylist(playlistId);
     const track = getTrack(playlistId, trackId);
@@ -1415,7 +1500,7 @@
     if (runtime.activeTrackId === trackId && audio.dataset.trackId === trackId) {
       if (options.restart) {
         try { audio.currentTime = 0; } catch (_) { /* Ignore an early seek failure. */ }
-        audio.play().catch(() => showToast('Playback could not start.', true));
+        await setPlaybackState(true);
       } else if (options.openIfActive !== false) {
         openNowPlayingModal();
       }
@@ -1427,39 +1512,38 @@
     runtime.queue = playlist.tracks.filter((item) => item.storageName).map((item) => item.id);
     runtime.queueIndex = runtime.queue.indexOf(trackId);
 
-    let playPromise = takePreparedAudio(playlistId, trackId);
-    if (!playPromise) {
+    const usedPreparedAudio = takePreparedAudio(playlistId, trackId);
+    if (!usedPreparedAudio) {
       runtime.preloadToken += 1;
       runtime.preloadedPlaylistId = null;
       runtime.preloadedTrackId = null;
       resetAudioElement(standbyAudio);
-      audio.pause();
+      runtime.playbackCommandId += 1;
+      runtime.playbackPending = false;
+      runtime.playbackDesired = false;
+      try { audio.pause(); } catch (_) { /* Ignore a stale player pause failure. */ }
       assignAudioSource(audio, playlistId, track);
-      playPromise = audio.play();
     }
 
     render();
     updateMediaSession();
     preloadNextTrack();
     ensureTrackWaveform(track);
-    try {
-      await playPromise;
-    } catch (error) {
-      console.warn('Playback did not start.', error);
-      showToast('Tap play to start audio.', true);
-    }
+    await setPlaybackState(true);
     updatePlayerDom();
     updateNowPlayingModal();
   }
 
   function togglePlayback() {
     if (!runtime.activeTrackId) return;
-    if (audio.paused) audio.play().catch(() => showToast('Playback could not start.', true));
-    else audio.pause();
+    void setPlaybackState(!playbackLooksActive());
   }
 
   function stopPlayback() {
     runtime.preloadToken += 1;
+    runtime.playbackCommandId += 1;
+    runtime.playbackPending = false;
+    runtime.playbackDesired = false;
     audioPlayers.forEach(resetAudioElement);
     audio = primaryAudio;
     standbyAudio = audioPlayers.find((element) => element !== audio) || standbyAudio;
@@ -1550,6 +1634,7 @@
     event.preventDefault();
     event.stopPropagation();
     const wasPlaying = !audio.paused;
+    if (wasPlaying) runtime.playbackDesired = true;
     const currentRatio = Math.max(0, Math.min(1, audio.currentTime / audio.duration));
     const scrubBounds = element.getBoundingClientRect();
     runtime.scrub = {
@@ -1570,7 +1655,10 @@
     app.querySelector('.player-dock')?.classList.add('is-scrubbing');
     modalRoot.querySelector('.now-playing-modal')?.classList.add('is-scrubbing');
     try { element.setPointerCapture(event.pointerId); } catch (_) { /* Older Safari can reject pointer capture. */ }
-    if (wasPlaying) audio.pause();
+    if (wasPlaying) {
+      runtime.temporaryPause = true;
+      audio.pause();
+    }
     paintScrubPreview(currentRatio);
   }
 
@@ -1613,7 +1701,10 @@
     runtime.suppressClickUntil = Date.now() + 180;
     updatePlayerDom();
     updateNowPlayingModal();
-    if (scrub.wasPlaying) audio.play().catch(() => undefined);
+    runtime.temporaryPause = false;
+    if (scrub.wasPlaying && runtime.playbackDesired) {
+      void setPlaybackState(true, { showError: false });
+    }
   }
 
   function startPlaybackUiLoop() {
@@ -1660,6 +1751,21 @@
     }
   }
 
+  function updateMediaPosition() {
+    if (!('mediaSession' in navigator) || typeof navigator.mediaSession.setPositionState !== 'function') return;
+    const duration = Number(audio?.duration);
+    const currentTime = Number(audio?.currentTime);
+    if (!Number.isFinite(duration) || duration <= 0 || !Number.isFinite(currentTime)) return;
+    const position = Math.max(0, Math.min(currentTime, Math.max(0, duration - .001)));
+    try {
+      navigator.mediaSession.setPositionState({
+        duration,
+        playbackRate: Number(audio.playbackRate) || 1,
+        position
+      });
+    } catch (_) { /* Position state is optional on older iOS versions. */ }
+  }
+
   function updateMediaSession() {
     if (!('mediaSession' in navigator)) return;
     const playlist = getPlaylist(runtime.activePlaylistId);
@@ -1667,13 +1773,14 @@
     if (!playlist || !track) return;
     const metadata = {
       title: track.title,
-      artist: state.profile.name,
-      album: playlist.name
+      artist: playlist.name,
+      album: 'iDroid'
     };
     if (playlist.cover) metadata.artwork = [{ src: playlist.cover, sizes: '512x512' }];
     try {
       navigator.mediaSession.metadata = new MediaMetadata(metadata);
       navigator.mediaSession.playbackState = audio.paused ? 'paused' : 'playing';
+      updateMediaPosition();
     } catch (error) {
       console.warn('Media Session metadata was not applied.', error);
     }
@@ -1682,8 +1789,9 @@
   function setupMediaSessionActions() {
     if (!('mediaSession' in navigator)) return;
     const handlers = {
-      play: () => audio.play(),
-      pause: () => audio.pause(),
+      play: () => setPlaybackState(true, { showError: false }),
+      pause: () => setPlaybackState(false, { showError: false }),
+      stop: () => setPlaybackState(false, { showError: false }),
       previoustrack: () => playNext(-1),
       nexttrack: () => playNext(1),
       seekbackward: (details) => { audio.currentTime = Math.max(0, audio.currentTime - (details.seekOffset || 10)); },
@@ -1937,14 +2045,22 @@
       if (element !== audio) return;
       updatePlayerDom();
       updateNowPlayingModal();
+      updateMediaPosition();
     });
     element.addEventListener('durationchange', () => {
       if (element !== audio) return;
       updatePlayerDom();
       updateNowPlayingModal();
+      updateMediaPosition();
     });
     element.addEventListener('play', () => {
-      if (element !== audio) return;
+      if (element !== audio) {
+        try { element.pause(); } catch (_) { /* Prevent a standby player from becoming audible. */ }
+        if (runtime.activeTrackId && audio.paused) {
+          void setPlaybackState(true, { showError: false });
+        }
+        return;
+      }
       updatePlayerDom();
       updateNowPlayingModal();
       updateMediaSession();
@@ -1953,6 +2069,9 @@
     });
     element.addEventListener('pause', () => {
       if (element !== audio) return;
+      if (!runtime.temporaryPause && !runtime.playbackPending) {
+        runtime.playbackDesired = false;
+      }
       updatePlayerDom();
       updateNowPlayingModal();
       updateMediaSession();
@@ -1962,7 +2081,7 @@
       if (element !== audio) return;
       if (runtime.repeatOne) {
         audio.currentTime = 0;
-        audio.play().catch(() => undefined);
+        void setPlaybackState(true, { showError: false });
         return;
       }
       void playNext(1);

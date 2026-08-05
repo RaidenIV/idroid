@@ -2368,3 +2368,83 @@ body.player-visible.home-view .home-add .asset-icon {
     animation-delay: 0ms !important;
   }
 }
+
+/* Playback-control, fixed-header, and Now Playing collapse corrections. */
+.home-menu-bar,
+.playlist-menu-bar {
+  transform: translate3d(-50%, 0, 0);
+}
+
+.home-add {
+  transform: translate3d(-50%, 0, 0);
+}
+
+.playlist-menu-bar > [data-action="back-home"] {
+  position: relative;
+  left: 0;
+  margin-right: auto;
+  flex: 0 0 auto;
+}
+
+/* Username text is intentionally absent; keep the remaining metadata aligned. */
+.playlist-meta > div,
+.profile-label > div:last-child {
+  min-width: 0;
+}
+
+.profile-label {
+  align-items: center;
+}
+
+.profile-date {
+  margin-top: 0;
+}
+
+.now-playing-backdrop.is-collapsing {
+  animation: now-playing-backdrop-collapse .28s ease both !important;
+}
+
+.now-playing-sheet.is-collapsing {
+  animation: now-playing-sheet-collapse .34s cubic-bezier(.55, .02, .8, .28) both !important;
+  pointer-events: none;
+}
+
+.now-playing-sheet.is-collapsing .now-playing-copy,
+.now-playing-sheet.is-collapsing .now-playing-cover,
+.now-playing-sheet.is-collapsing .now-playing-waveform,
+.now-playing-sheet.is-collapsing .now-playing-time,
+.now-playing-sheet.is-collapsing .now-playing-controls {
+  animation: now-playing-content-collapse .2s ease both !important;
+}
+
+@keyframes now-playing-backdrop-collapse {
+  from {
+    opacity: 1;
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
+  }
+  to {
+    opacity: 0;
+    backdrop-filter: blur(0);
+    -webkit-backdrop-filter: blur(0);
+  }
+}
+
+@keyframes now-playing-sheet-collapse {
+  0% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0) scale(1);
+    clip-path: inset(0 0 0 0 round 34px);
+  }
+  100% {
+    opacity: 0;
+    transform: translate3d(0, 18vh, 0) scale(.54, .18);
+    clip-path: inset(78% 7% 0 7% round 42px);
+  }
+}
+
+@keyframes now-playing-content-collapse {
+  from { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  to { opacity: 0; transform: translate3d(0, 10px, 0) scale(.985); }
+}
+
