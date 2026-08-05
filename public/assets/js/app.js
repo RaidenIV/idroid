@@ -34,6 +34,8 @@
     previous: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="3" height="14" rx="1"></rect><path d="m20 5-11 7 11 7z"></path></svg>',
     next: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="17" y="5" width="3" height="14" rx="1"></rect><path d="m4 5 11 7-11 7z"></path></svg>',
     repeat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2.5 21 6l-4 3.5"></path><path d="M3 11V9a3 3 0 0 1 3-3h15"></path><path d="m7 21.5-4-3.5L7 14.5"></path><path d="M21 13v2a3 3 0 0 1-3 3H3"></path></svg>',
+    repeatOne: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 2.5 21 6l-4 3.5"></path><path d="M3 11V9a3 3 0 0 1 3-3h15"></path><path d="m7 21.5-4-3.5L7 14.5"></path><path d="M21 13v2a3 3 0 0 1-3 3H3"></path><path d="M12 10v6"></path><path d="m10.5 11.5 1.5-1.5"></path></svg>',
+    shuffle: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 3h5v5"></path><path d="m21 3-7.5 7.5"></path><path d="M3 7h3.5c2.2 0 3.4 1.2 4.6 3"></path><path d="M16 16h5v5"></path><path d="m21 21-7.5-7.5"></path><path d="M3 17h3.5c2.2 0 3.4-1.2 4.6-3"></path></svg>',
     pencil: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m4 20 4.5-1 10-10a2.1 2.1 0 0 0-3-3l-10 10z"></path><path d="m14 7 3 3"></path></svg>',
     trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M7 7l1 14h8l1-14"></path></svg>',
     delete: '<span class="masked-icon delete-icon" aria-hidden="true"></span>',
@@ -51,6 +53,84 @@
     'linear-gradient(145deg, #e3e3e3 0%, #737373 100%)'
   ];
 
+
+  const DISPLAY_STORAGE_KEYS = {
+    theme: 'idroid_theme_mode_v1',
+    accent: 'idroid_accent_color_v1'
+  };
+  const DARK_MODE_ACCENTS = ['#ff5fd2', '#ff00b5', '#ff2000', '#ff8a00', '#fff400', '#9fff00', '#35ff00', '#00ff35', '#00ff8a', '#0075ff'];
+  const LIGHT_MODE_ACCENTS = ['#2400ff', '#8a00ff', '#df00ff', '#ff00b5', '#ff5fd2', '#ff004a'];
+  const DEFAULT_ACCENTS = { dark: '#ff8a00', light: '#2400ff' };
+
+  function normalizeThemeMode(mode) {
+    return mode === 'light' ? 'light' : 'dark';
+  }
+
+  function accentOptionsForMode(mode) {
+    return normalizeThemeMode(mode) === 'light' ? LIGHT_MODE_ACCENTS : DARK_MODE_ACCENTS;
+  }
+
+  function normalizeAccentColor(color, mode) {
+    const normalizedMode = normalizeThemeMode(mode);
+    const normalizedColor = String(color || '').trim().toLowerCase();
+    return accentOptionsForMode(normalizedMode).includes(normalizedColor)
+      ? normalizedColor
+      : DEFAULT_ACCENTS[normalizedMode];
+  }
+
+  function hexToRgb(hex) {
+    const numeric = Number.parseInt(String(hex).replace('#', ''), 16);
+    return {
+      r: (numeric >> 16) & 255,
+      g: (numeric >> 8) & 255,
+      b: numeric & 255
+    };
+  }
+
+  function getDisplayPreferences() {
+    let mode = 'dark';
+    let accent = DEFAULT_ACCENTS.dark;
+    try {
+      mode = normalizeThemeMode(localStorage.getItem(DISPLAY_STORAGE_KEYS.theme));
+      accent = normalizeAccentColor(localStorage.getItem(DISPLAY_STORAGE_KEYS.accent), mode);
+    } catch (_) {
+      mode = 'dark';
+      accent = DEFAULT_ACCENTS.dark;
+    }
+    return { mode, accent };
+  }
+
+  function applyDisplayPreferences(mode, accent, persist = true) {
+    const normalizedMode = normalizeThemeMode(mode);
+    const normalizedAccent = normalizeAccentColor(accent, normalizedMode);
+    const { r, g, b } = hexToRgb(normalizedAccent);
+    const luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+    const root = document.documentElement;
+    root.dataset.theme = normalizedMode;
+    document.body.dataset.theme = normalizedMode;
+    root.style.setProperty('--accent', normalizedAccent);
+    root.style.setProperty('--accent-rgb', `${r}, ${g}, ${b}`);
+    root.style.setProperty('--accent-soft', `rgba(${r}, ${g}, ${b}, .2)`);
+    root.style.setProperty('--accent-contrast', luminance > .62 ? '#111111' : '#ffffff');
+
+    const themeMeta = document.querySelector('meta[name="theme-color"]');
+    if (themeMeta) themeMeta.content = normalizedMode === 'light' ? '#f3f3f4' : '#151515';
+
+    if (persist) {
+      try {
+        localStorage.setItem(DISPLAY_STORAGE_KEYS.theme, normalizedMode);
+        localStorage.setItem(DISPLAY_STORAGE_KEYS.accent, normalizedAccent);
+      } catch (_) {
+        // The visual preference still applies for the current session.
+      }
+    }
+    return { mode: normalizedMode, accent: normalizedAccent };
+  }
+
+  function loadDisplayPreferences() {
+    const preferences = getDisplayPreferences();
+    applyDisplayPreferences(preferences.mode, preferences.accent, false);
+  }
 
   const WAVEFORM_SAMPLE_COUNT = 256;
   const WAVEFORM_MIN_VALUE = 0.035;
@@ -77,7 +157,8 @@
     temporaryPause: false,
     uploadToast: null,
     scrub: null,
-    repeatOne: false,
+    repeatMode: 'off',
+    shuffleNextIndex: -1,
     waveformAnalyses: new Map(),
     playbackFrame: 0,
     playbackFrameTimestamp: 0,
@@ -459,7 +540,6 @@
           <span class="scrub-line" aria-hidden="true"></span>
           <div class="scrub-readout" aria-hidden="true"><span class="scrub-current">0:00</span><span class="scrub-divider">/</span><span class="scrub-total">0:00</span></div>
         </div>
-        ${runtime.view === 'home' ? '' : `<button class="player-share" type="button" data-action="share-track" aria-label="Share track information">${icons.share}</button>`}
       </aside>
     `;
   }
@@ -482,6 +562,39 @@
 
   function nowPlayingWaveformMarkup(track) {
     return waveformMarkup(track);
+  }
+
+  function setRepeatMode(mode) {
+    const allowed = new Set(['off', 'all', 'one', 'shuffle']);
+    runtime.repeatMode = allowed.has(mode) ? mode : 'off';
+    runtime.shuffleNextIndex = -1;
+    preloadNextTrack();
+    updateNowPlayingModal();
+  }
+
+  function openRepeatModeMenu() {
+    const wrap = modalRoot.querySelector('.repeat-control-wrap');
+    const trigger = wrap?.querySelector('.now-playing-repeat');
+    const menu = wrap?.querySelector('.repeat-mode-menu');
+    if (!wrap || !trigger || !menu || wrap.classList.contains('is-open')) return;
+    wrap.classList.remove('is-closing');
+    wrap.classList.add('is-open');
+    trigger.setAttribute('aria-expanded', 'true');
+    menu.setAttribute('aria-hidden', 'false');
+  }
+
+  function closeRepeatModeMenu() {
+    const wrap = modalRoot.querySelector('.repeat-control-wrap');
+    const trigger = wrap?.querySelector('.now-playing-repeat');
+    const menu = wrap?.querySelector('.repeat-mode-menu');
+    if (!wrap || !trigger || !menu || !wrap.classList.contains('is-open')) return;
+    wrap.classList.add('is-closing');
+    trigger.setAttribute('aria-expanded', 'false');
+    menu.setAttribute('aria-hidden', 'true');
+    window.setTimeout(() => {
+      if (!modalRoot.contains(wrap)) return;
+      wrap.classList.remove('is-open', 'is-closing');
+    }, 280);
   }
 
   function openNowPlayingModal() {
@@ -513,7 +626,15 @@
           <button class="now-playing-control now-playing-previous" type="button" aria-label="Previous track">${icons.previous}</button>
           <button class="now-playing-control now-playing-toggle" type="button" aria-label="${audio.paused ? 'Play' : 'Pause'}">${audio.paused ? icons.play : icons.pause}</button>
           <button class="now-playing-control now-playing-next" type="button" aria-label="Next track">${icons.next}</button>
-          <button class="now-playing-control now-playing-repeat ${runtime.repeatOne ? 'active' : ''}" type="button" aria-label="${runtime.repeatOne ? 'Disable repeat track' : 'Repeat track'}" aria-pressed="${runtime.repeatOne}">${icons.repeat}</button>
+          <div class="repeat-control-wrap">
+            <button class="now-playing-control now-playing-repeat ${runtime.repeatMode !== 'off' ? 'active' : ''}" type="button" aria-label="Choose playback mode" aria-haspopup="menu" aria-expanded="false">${icons.repeat}</button>
+            <div class="repeat-mode-menu" role="menu" aria-label="Playback mode" aria-hidden="true">
+              <button class="repeat-mode-option" type="button" role="menuitemradio" data-repeat-mode="shuffle" aria-checked="${runtime.repeatMode === 'shuffle'}" aria-label="Shuffle">${icons.shuffle}</button>
+              <button class="repeat-mode-option" type="button" role="menuitemradio" data-repeat-mode="one" aria-checked="${runtime.repeatMode === 'one'}" aria-label="Repeat one">${icons.repeatOne}</button>
+              <button class="repeat-mode-option" type="button" role="menuitemradio" data-repeat-mode="all" aria-checked="${runtime.repeatMode === 'all'}" aria-label="Repeat all">${icons.repeat}</button>
+              <button class="repeat-mode-option repeat-mode-close" type="button" role="menuitemradio" data-repeat-mode="off" aria-checked="${runtime.repeatMode === 'off'}" aria-label="Turn repeat off">${icons.close}</button>
+            </div>
+          </div>
         </div>
       </section>
     `);
@@ -534,10 +655,18 @@
     modalRoot.querySelector('.now-playing-share')?.addEventListener('click', shareCurrentTrack);
     modalRoot.querySelector('.now-playing-previous')?.addEventListener('click', () => playNext(-1));
     modalRoot.querySelector('.now-playing-next')?.addEventListener('click', () => playNext(1));
-    modalRoot.querySelector('.now-playing-repeat')?.addEventListener('click', () => {
-      runtime.repeatOne = !runtime.repeatOne;
-      preloadNextTrack();
-      updateNowPlayingModal();
+    modalRoot.querySelector('.now-playing-repeat')?.addEventListener('click', openRepeatModeMenu);
+    modalRoot.querySelectorAll('[data-repeat-mode]').forEach((button) => {
+      button.addEventListener('click', () => {
+        setRepeatMode(button.dataset.repeatMode);
+        closeRepeatModeMenu();
+      });
+    });
+    modalRoot.querySelector('.now-playing-modal')?.addEventListener('click', (event) => {
+      const wrap = modalRoot.querySelector('.repeat-control-wrap');
+      if (wrap?.classList.contains('is-open') && !event.target.closest('.repeat-control-wrap')) {
+        closeRepeatModeMenu();
+      }
     });
     updateNowPlayingModal();
   }
@@ -565,10 +694,15 @@
 
     const repeat = modal.querySelector('.now-playing-repeat');
     if (repeat) {
-      repeat.classList.toggle('active', runtime.repeatOne);
-      repeat.setAttribute('aria-pressed', String(runtime.repeatOne));
-      repeat.setAttribute('aria-label', runtime.repeatOne ? 'Disable repeat track' : 'Repeat track');
+      const active = runtime.repeatMode !== 'off';
+      repeat.classList.toggle('active', active);
+      repeat.setAttribute('aria-label', active ? `Playback mode: ${runtime.repeatMode}` : 'Choose playback mode');
     }
+    modal.querySelectorAll('[data-repeat-mode]').forEach((button) => {
+      const selected = button.dataset.repeatMode === runtime.repeatMode;
+      button.classList.toggle('is-active', selected);
+      button.setAttribute('aria-checked', String(selected));
+    });
 
     const duration = Number.isFinite(audio.duration) ? audio.duration : 0;
     const liveRatio = duration ? Math.max(0, Math.min(1, audio.currentTime / duration)) : 0;
@@ -836,10 +970,24 @@
   }
 
   function openProfileEditor() {
-    const draft = { avatar: state.profile.avatar };
+    const preferences = getDisplayPreferences();
+    const draft = {
+      avatar: state.profile.avatar,
+      mode: preferences.mode,
+      accent: preferences.accent
+    };
+
+    const accentMarkup = () => accentOptionsForMode(draft.mode).map((color) => `
+      <button class="accent-color-swatch ${draft.accent === color ? 'is-active' : ''}" type="button"
+              data-accent-color="${color}" style="--swatch-color:${color}"
+              aria-label="Use accent color ${color}" aria-pressed="${draft.accent === color}">
+        <span aria-hidden="true"></span>
+      </button>
+    `).join('');
+
     openModal(`
       <h2 class="modal-title">Edit Profile</h2>
-      <p class="modal-copy">Update the profile picture used by iDroid.</p>
+      <p class="modal-copy">Update the profile picture and customize iDroid's appearance.</p>
       <div class="form-grid">
         <div class="field">
           <label for="profileImage">Profile picture</label>
@@ -849,6 +997,24 @@
           </label>
           <input id="profileImage" class="visually-hidden" type="file" accept="image/*">
         </div>
+
+        <section class="appearance-settings" aria-labelledby="appearanceSettingsTitle">
+          <div class="appearance-setting-row">
+            <div>
+              <strong id="appearanceSettingsTitle">Color mode</strong>
+              <small data-theme-mode-label>${draft.mode === 'dark' ? 'Dark Mode' : 'Light Mode'}</small>
+            </div>
+            <button class="color-mode-toggle ${draft.mode === 'dark' ? 'is-dark' : ''}" type="button"
+                    data-theme-toggle aria-pressed="${draft.mode === 'dark'}"
+                    aria-label="Switch to ${draft.mode === 'dark' ? 'light' : 'dark'} mode">
+              <span class="color-mode-toggle-track">
+                <span class="color-mode-toggle-thumb" aria-hidden="true"></span>
+              </span>
+            </button>
+          </div>
+          <div class="appearance-section-label">Accent color</div>
+          <div class="accent-color-grid" data-accent-grid aria-label="Accent color choices">${accentMarkup()}</div>
+        </section>
       </div>
       <div class="modal-actions">
         <button class="action-button" type="button" data-profile-cancel>Cancel</button>
@@ -858,6 +1024,34 @@
 
     const imageInput = modalRoot.querySelector('#profileImage');
     const status = modalRoot.querySelector('#profileImageStatus');
+    const themeToggle = modalRoot.querySelector('[data-theme-toggle]');
+    const accentGrid = modalRoot.querySelector('[data-accent-grid]');
+    const modeLabel = modalRoot.querySelector('[data-theme-mode-label]');
+
+    const renderAppearanceControls = () => {
+      themeToggle?.classList.toggle('is-dark', draft.mode === 'dark');
+      themeToggle?.setAttribute('aria-pressed', String(draft.mode === 'dark'));
+      themeToggle?.setAttribute('aria-label', `Switch to ${draft.mode === 'dark' ? 'light' : 'dark'} mode`);
+      if (modeLabel) modeLabel.textContent = draft.mode === 'dark' ? 'Dark Mode' : 'Light Mode';
+      if (accentGrid) accentGrid.innerHTML = accentMarkup();
+    };
+
+    themeToggle?.addEventListener('click', () => {
+      draft.mode = draft.mode === 'dark' ? 'light' : 'dark';
+      draft.accent = normalizeAccentColor(draft.accent, draft.mode);
+      applyDisplayPreferences(draft.mode, draft.accent, true);
+      renderAppearanceControls();
+      render();
+    });
+
+    accentGrid?.addEventListener('click', (event) => {
+      const swatch = event.target.closest('[data-accent-color]');
+      if (!swatch) return;
+      draft.accent = normalizeAccentColor(swatch.dataset.accentColor, draft.mode);
+      applyDisplayPreferences(draft.mode, draft.accent, true);
+      renderAppearanceControls();
+      render();
+    });
 
     imageInput?.addEventListener('change', async () => {
       const file = imageInput.files?.[0];
@@ -1297,9 +1491,32 @@
     return audioElementMatches(standbyAudio, playlistId, trackId);
   }
 
+  function chooseShuffleIndex() {
+    if (runtime.queue.length < 2) return runtime.queueIndex;
+    if (
+      Number.isInteger(runtime.shuffleNextIndex)
+      && runtime.shuffleNextIndex >= 0
+      && runtime.shuffleNextIndex < runtime.queue.length
+      && runtime.shuffleNextIndex !== runtime.queueIndex
+    ) {
+      return runtime.shuffleNextIndex;
+    }
+    let index = runtime.queueIndex;
+    while (index === runtime.queueIndex) index = Math.floor(Math.random() * runtime.queue.length);
+    runtime.shuffleNextIndex = index;
+    return index;
+  }
+
   function queuedTrackEntry(offset = 1) {
     if (!runtime.queue.length || !runtime.activePlaylistId) return null;
-    const index = (runtime.queueIndex + offset + runtime.queue.length) % runtime.queue.length;
+    let index;
+    if (runtime.repeatMode === 'shuffle' && offset > 0) {
+      index = chooseShuffleIndex();
+    } else {
+      const rawIndex = runtime.queueIndex + offset;
+      if (runtime.repeatMode === 'off' && (rawIndex < 0 || rawIndex >= runtime.queue.length)) return null;
+      index = (rawIndex + runtime.queue.length) % runtime.queue.length;
+    }
     const trackId = runtime.queue[index];
     const track = getTrack(runtime.activePlaylistId, trackId);
     return track?.storageName
@@ -1357,7 +1574,7 @@
   }
 
   function preloadNextTrack() {
-    if (runtime.repeatOne || runtime.queue.length < 2) {
+    if (runtime.repeatMode === 'one' || runtime.queue.length < 2) {
       runtime.preloadedPlaylistId = null;
       runtime.preloadedTrackId = null;
       runtime.preloadToken += 1;
@@ -1511,6 +1728,7 @@
     runtime.activeTrackId = trackId;
     runtime.queue = playlist.tracks.filter((item) => item.storageName).map((item) => item.id);
     runtime.queueIndex = runtime.queue.indexOf(trackId);
+    runtime.shuffleNextIndex = -1;
 
     const usedPreparedAudio = takePreparedAudio(playlistId, trackId);
     if (!usedPreparedAudio) {
@@ -1558,11 +1776,26 @@
     render();
   }
 
-  async function playNext(direction = 1) {
+  async function playNext(direction = 1, options = {}) {
     if (!runtime.queue.length || runtime.handoffInProgress) return;
     runtime.handoffInProgress = true;
     try {
-      const nextIndex = (runtime.queueIndex + direction + runtime.queue.length) % runtime.queue.length;
+      const automatic = Boolean(options.automatic);
+      let nextIndex;
+
+      if (runtime.repeatMode === 'shuffle' && direction > 0) {
+        nextIndex = chooseShuffleIndex();
+      } else {
+        const rawIndex = runtime.queueIndex + direction;
+        if (automatic && runtime.repeatMode === 'off' && (rawIndex < 0 || rawIndex >= runtime.queue.length)) {
+          runtime.playbackDesired = false;
+          await setPlaybackState(false, { showError: false });
+          return;
+        }
+        nextIndex = (rawIndex + runtime.queue.length) % runtime.queue.length;
+      }
+
+      runtime.shuffleNextIndex = -1;
       const nextTrackId = runtime.queue[nextIndex];
       await playTrack(runtime.activePlaylistId, nextTrackId, {
         openIfActive: false,
@@ -2079,12 +2312,12 @@
     });
     element.addEventListener('ended', () => {
       if (element !== audio) return;
-      if (runtime.repeatOne) {
+      if (runtime.repeatMode === 'one') {
         audio.currentTime = 0;
         void setPlaybackState(true, { showError: false });
         return;
       }
-      void playNext(1);
+      void playNext(1, { automatic: true });
     });
     element.addEventListener('error', () => {
       if (element === standbyAudio) {
@@ -2107,6 +2340,7 @@
 
   async function initialize() {
     try {
+      loadDisplayPreferences();
       state = await loadState();
       setupMediaSessionActions();
       render();

@@ -1,4 +1,4 @@
-const CACHE_NAME = 'idroid-shell-v14';
+const CACHE_NAME = 'idroid-shell-v15';
 const APP_SHELL = [
   '/',
   '/index.html',
@@ -6,6 +6,7 @@ const APP_SHELL = [
   '/assets/css/styles.css',
   '/assets/js/app.js',
   '/assets/images/music.png',
+  '/assets/pwa/apple-touch-icon.png',
   '/assets/icons/user.svg',
   '/assets/icons/add.svg',
   '/assets/icons/down.svg',
