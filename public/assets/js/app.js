@@ -109,6 +109,9 @@
   const WAVEFORM_MIN_VALUE = 0.018;
   const SCRUB_DRAG_WEIGHT = 1.55;
   const SCRUB_TAP_THRESHOLD = 7;
+  const PLAYBACK_START_TIMEOUT = 7000;
+  const PLAYBACK_PROGRESS_TIMEOUT = 2200;
+  const PLAYBACK_MAX_ATTEMPTS = 3;
 
   const runtime = {
     view: 'home',
@@ -124,6 +127,9 @@
     transition: null,
     preloadedPlaylistId: null,
     preloadedTrackId: null,
+    preloadedReady: false,
+    preloadPromise: null,
+    preloadError: null,
     preloadToken: 0,
     handoffInProgress: false,
     playbackCommandId: 0,
@@ -139,6 +145,8 @@
     playbackFrameTimestamp: 0,
     playbackHealthToken: 0,
     playbackRecoveryPending: false,
+    playbackFailureToastAt: 0,
+    retryPlaybackWhenOnline: false,
     audioContext: null
   };
 
@@ -1643,9 +1651,60 @@
     return analysis;
   }
 
-  function trackStreamUrl(track) {
+  function trackStreamUrl(track, retryKey = '') {
     const version = encodeURIComponent(track.contentHash || track.storageName || track.id);
-    return `/api/tracks/${encodeURIComponent(track.id)}/audio?v=${version}`;
+    const retry = retryKey ? `&retry=${encodeURIComponent(retryKey)}` : '';
+    return `/api/tracks/${encodeURIComponent(track.id)}/audio?v=${version}${retry}`;
+  }
+
+  function activeTrackEntry() {
+    const playlist = getPlaylist(runtime.activePlaylistId);
+    const track = getTrack(runtime.activePlaylistId, runtime.activeTrackId);
+    return playlist && track ? { playlist, track } : null;
+  }
+
+  function mediaErrorDetails(element, fallbackError = null) {
+    const code = Number(element?.error?.code) || 0;
+    const messages = {
+      1: 'Playback was interrupted.',
+      2: 'The audio connection was interrupted.',
+      3: 'The audio file could not be decoded.',
+      4: 'The audio format is not supported.'
+    };
+    return {
+      code,
+      name: fallbackError?.name || '',
+      message: messages[code] || fallbackError?.message || 'Playback could not start.'
+    };
+  }
+
+  function commandIsCurrent(commandId, element = audio) {
+    return commandId === runtime.playbackCommandId && element === audio && runtime.playbackDesired;
+  }
+
+  function withTimeout(promise, timeout, message) {
+    if (!promise || typeof promise.then !== 'function') return Promise.resolve();
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timer = window.setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        const error = new Error(message);
+        error.name = 'TimeoutError';
+        reject(error);
+      }, timeout);
+      promise.then((value) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        resolve(value);
+      }, (error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        reject(error);
+      });
+    });
   }
 
   function syncAudioRoles() {
@@ -1662,8 +1721,8 @@
     });
   }
 
-  function waitForPlayable(element, timeout = 2400) {
-    if (!element) return Promise.resolve(false);
+  function waitForPlayable(element, timeout = PLAYBACK_START_TIMEOUT) {
+    if (!element || element.error) return Promise.resolve(false);
     if (element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return Promise.resolve(true);
     return new Promise((resolve) => {
       let settled = false;
@@ -1672,21 +1731,193 @@
         if (settled) return;
         settled = true;
         window.clearTimeout(timer);
-        element.removeEventListener('canplay', onReady);
-        element.removeEventListener('playing', onReady);
+        ['loadeddata', 'canplay', 'canplaythrough', 'playing'].forEach((name) => {
+          element.removeEventListener(name, onReady);
+        });
         element.removeEventListener('error', onError);
-        resolve(ready);
+        resolve(Boolean(ready && !element.error));
       };
-      const onReady = () => finish(true);
+      const onReady = () => finish(element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA);
       const onError = () => finish(false);
-      element.addEventListener('canplay', onReady, { once: true });
-      element.addEventListener('playing', onReady, { once: true });
+      ['loadeddata', 'canplay', 'canplaythrough', 'playing'].forEach((name) => {
+        element.addEventListener(name, onReady, { once: true });
+      });
       element.addEventListener('error', onError, { once: true });
       timer = window.setTimeout(
         () => finish(element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA),
         timeout
       );
     });
+  }
+
+  function waitForPlaybackAdvance(element, commandId, timeout = PLAYBACK_PROGRESS_TIMEOUT) {
+    if (!element || !commandIsCurrent(commandId, element)) return Promise.resolve(false);
+    const startTime = Number.isFinite(element.currentTime) ? element.currentTime : 0;
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer = 0;
+      let interval = 0;
+      const finish = (started) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        window.clearInterval(interval);
+        element.removeEventListener('error', onError);
+        element.removeEventListener('ended', onEnded);
+        resolve(Boolean(started));
+      };
+      const inspect = () => {
+        if (!commandIsCurrent(commandId, element)) return finish(false);
+        if (element.error) return finish(false);
+        const currentTime = Number.isFinite(element.currentTime) ? element.currentTime : startTime;
+        if (currentTime - startTime >= .025 || element.ended) finish(true);
+      };
+      const onError = () => finish(false);
+      const onEnded = () => finish(true);
+      element.addEventListener('error', onError, { once: true });
+      element.addEventListener('ended', onEnded, { once: true });
+      interval = window.setInterval(inspect, 80);
+      timer = window.setTimeout(() => finish(false), timeout);
+      inspect();
+    });
+  }
+
+  function clearPreloadState({ reset = false } = {}) {
+    runtime.preloadToken += 1;
+    runtime.preloadedPlaylistId = null;
+    runtime.preloadedTrackId = null;
+    runtime.preloadedReady = false;
+    runtime.preloadPromise = null;
+    runtime.preloadError = null;
+    if (reset) resetAudioElement(standbyAudio);
+  }
+
+  async function restorePlaybackPosition(element, time) {
+    if (!element || !Number.isFinite(time) || time <= 0) return;
+    if (element.readyState < HTMLMediaElement.HAVE_METADATA) {
+      await new Promise((resolve) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          window.clearTimeout(timer);
+          element.removeEventListener('loadedmetadata', finish);
+          resolve();
+        };
+        const timer = window.setTimeout(finish, 2500);
+        element.addEventListener('loadedmetadata', finish, { once: true });
+      });
+    }
+    try {
+      const upperBound = Number.isFinite(element.duration) && element.duration > .15
+        ? Math.max(0, element.duration - .1)
+        : time;
+      element.currentTime = Math.min(time, upperBound);
+    } catch (_) {
+      // A later timeupdate will establish the correct position if an early seek is rejected.
+    }
+  }
+
+  async function rebuildActiveAudioSource({ useAlternate = false, resumeTime = 0, attempt = 1 } = {}) {
+    const entry = activeTrackEntry();
+    if (!entry?.track?.storageName) return false;
+
+    clearPreloadState({ reset: true });
+    const previousAudio = audio;
+    let target = audio;
+    if (useAlternate) {
+      target = standbyAudio;
+      audio = target;
+      standbyAudio = previousAudio;
+    }
+
+    try { previousAudio.pause(); } catch (_) { /* Ignore a stale player pause failure. */ }
+    resetAudioElement(target);
+    assignAudioSource(target, runtime.activePlaylistId, entry.track, {
+      force: true,
+      retryKey: `${Date.now()}-${attempt}`
+    });
+    syncAudioRoles();
+
+    const ready = await waitForPlayable(target, PLAYBACK_START_TIMEOUT + attempt * 1500);
+    await restorePlaybackPosition(target, resumeTime);
+    return ready && !target.error;
+  }
+
+  function isExpectedSupersededError(error, commandId, element) {
+    if (commandId !== runtime.playbackCommandId || element !== audio || !runtime.playbackDesired) return true;
+    return error?.name === 'AbortError' && commandId !== runtime.playbackCommandId;
+  }
+
+  async function startPlaybackWithRecovery(commandId, options = {}) {
+    const resumeTime = Number.isFinite(options.resumeTime)
+      ? options.resumeTime
+      : Number.isFinite(audio.currentTime) ? audio.currentTime : 0;
+    let lastError = null;
+
+    for (let attempt = 0; attempt < PLAYBACK_MAX_ATTEMPTS; attempt += 1) {
+      if (!commandIsCurrent(commandId)) return { ok: false, superseded: true };
+
+      if (attempt > 0 || options.forceReload) {
+        const rebuilt = await rebuildActiveAudioSource({
+          useAlternate: attempt >= PLAYBACK_MAX_ATTEMPTS - 1,
+          resumeTime,
+          attempt: attempt + 1
+        });
+        options.forceReload = false;
+        if (!commandIsCurrent(commandId)) return { ok: false, superseded: true };
+        if (!rebuilt && attempt < PLAYBACK_MAX_ATTEMPTS - 1) continue;
+      }
+
+      const target = audio;
+      syncAudioRoles();
+      try {
+        target.muted = false;
+        target.volume = 1;
+        const result = target.play();
+        await withTimeout(result, PLAYBACK_START_TIMEOUT, 'Playback start timed out.');
+        if (!commandIsCurrent(commandId, target)) return { ok: false, superseded: true };
+
+        const advanced = await waitForPlaybackAdvance(target, commandId);
+        if (!advanced) {
+          const error = new Error('Playback did not advance.');
+          error.name = 'PlaybackStalledError';
+          throw error;
+        }
+
+        return { ok: true, element: target };
+      } catch (error) {
+        if (isExpectedSupersededError(error, commandId, target)) {
+          return { ok: false, superseded: true };
+        }
+        lastError = error;
+        console.warn(`Playback attempt ${attempt + 1} failed.`, {
+          error,
+          media: mediaErrorDetails(target, error),
+          readyState: target.readyState,
+          networkState: target.networkState,
+          currentSrc: target.currentSrc
+        });
+        try { target.pause(); } catch (_) { /* Retry with a clean media request. */ }
+      }
+    }
+
+    return { ok: false, error: lastError, media: mediaErrorDetails(audio, lastError) };
+  }
+
+  function showPlaybackFailure(result, recovery = false) {
+    const now = Date.now();
+    if (now - runtime.playbackFailureToastAt < 2500) return;
+    runtime.playbackFailureToastAt = now;
+    if (!navigator.onLine || result?.media?.code === 2) {
+      showToast('The audio connection was interrupted. iDroid will retry when the connection returns.', true);
+      return;
+    }
+    if (result?.media?.code === 3 || result?.media?.code === 4) {
+      showToast(result.media.message, true);
+      return;
+    }
+    showToast(recovery ? 'Playback was interrupted and could not be restored.' : 'Playback could not start. Tap play to retry.', true);
   }
 
   async function recoverSilentPlayback(element, commandId, startTime) {
@@ -1699,42 +1930,14 @@
     ) return false;
 
     runtime.playbackRecoveryPending = true;
-    const recoveryToken = ++runtime.playbackHealthToken;
     const resumeTime = Number.isFinite(element.currentTime) ? element.currentTime : startTime;
-
     try {
-      syncAudioRoles();
-      try { element.pause(); } catch (_) { /* Ignore a transient pause failure. */ }
-
-      if (element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
-        try { element.load(); } catch (_) { /* Keep the current source if reload is rejected. */ }
-        await waitForPlayable(element);
-      }
-
-      if (
-        recoveryToken !== runtime.playbackHealthToken
-        || commandId !== runtime.playbackCommandId
-        || element !== audio
-        || !runtime.playbackDesired
-      ) return false;
-
-      if (Number.isFinite(resumeTime) && Math.abs(element.currentTime - resumeTime) > .2) {
-        try { element.currentTime = resumeTime; } catch (_) { /* Metadata may still be settling. */ }
-      }
-
-      syncAudioRoles();
-      const result = element.play();
-      if (result && typeof result.then === 'function') await result;
-      return (
-        recoveryToken === runtime.playbackHealthToken
-        && commandId === runtime.playbackCommandId
-        && element === audio
-        && runtime.playbackDesired
-        && !element.paused
-      );
-    } catch (error) {
-      console.warn('Silent playback recovery failed.', error);
-      return false;
+      return await setPlaybackState(true, {
+        showError: true,
+        forceReload: true,
+        resumeTime,
+        recovery: true
+      });
     } finally {
       runtime.playbackRecoveryPending = false;
       updatePlayerDom();
@@ -1759,9 +1962,9 @@
       ) return;
 
       const currentTime = Number.isFinite(element.currentTime) ? element.currentTime : startTime;
-      if (currentTime - startTime >= .035) return;
+      if (currentTime - startTime >= .06) return;
       void recoverSilentPlayback(element, commandId, startTime);
-    }, 850);
+    }, 1400);
   }
 
   function resetAudioElement(element) {
@@ -1771,22 +1974,26 @@
     element.removeAttribute('src');
     delete element.dataset.trackId;
     delete element.dataset.playlistId;
+    delete element.dataset.sourceKey;
     element.preload = 'auto';
     try { element.load(); } catch (_) { /* Ignore media reset failures. */ }
   }
 
-  function assignAudioSource(element, playlistId, track) {
+  function assignAudioSource(element, playlistId, track, options = {}) {
     if (!element || !track?.storageName) return;
-    const alreadyAssigned = element.dataset.trackId === track.id
+    const alreadyAssigned = !options.force
+      && element.dataset.trackId === track.id
       && element.dataset.playlistId === playlistId
-      && element.getAttribute('src');
+      && element.getAttribute('src')
+      && !element.error;
     if (alreadyAssigned) return;
     element.preload = 'auto';
-    element.src = trackStreamUrl(track);
+    element.src = trackStreamUrl(track, options.retryKey);
     element.dataset.trackId = track.id;
     element.dataset.playlistId = playlistId;
+    element.dataset.sourceKey = options.retryKey || 'primary';
     try { element.muted = element !== audio; element.volume = 1; } catch (_) { /* Ignore transient iOS media writes. */ }
-    element.load();
+    try { element.load(); } catch (_) { /* play() will retry source loading if needed. */ }
   }
 
   function audioElementMatches(element, playlistId, trackId) {
@@ -1839,57 +2046,82 @@
     const track = getTrack(playlistId, trackId);
     if (!track?.storageName || !standbyAudio) return Promise.resolve(false);
     if (trackId === runtime.activeTrackId && playlistId === runtime.activePlaylistId) return Promise.resolve(false);
-    if (standbyMatches(playlistId, trackId)) return Promise.resolve(true);
+
+    if (standbyMatches(playlistId, trackId)) {
+      if (
+        runtime.preloadedReady
+        && !standbyAudio.error
+        && standbyAudio.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+      ) return Promise.resolve(true);
+      if (runtime.preloadPromise) return runtime.preloadPromise;
+    }
 
     const preloadToken = ++runtime.preloadToken;
     const preloadElement = standbyAudio;
     runtime.preloadedPlaylistId = playlistId;
     runtime.preloadedTrackId = trackId;
+    runtime.preloadedReady = false;
+    runtime.preloadError = null;
     resetAudioElement(preloadElement);
-    assignAudioSource(preloadElement, playlistId, track);
+    assignAudioSource(preloadElement, playlistId, track, { force: true });
 
-    return new Promise((resolve) => {
+    const promise = new Promise((resolve) => {
       let settled = false;
       let timeoutId = 0;
-      const finish = (ready) => {
+      const finish = (ready, error = null) => {
         if (settled) return;
         settled = true;
         window.clearTimeout(timeoutId);
-        preloadElement.removeEventListener('canplay', handleCanPlay);
+        ['loadeddata', 'canplay', 'canplaythrough'].forEach((name) => {
+          preloadElement.removeEventListener(name, handleReady);
+        });
         preloadElement.removeEventListener('error', handleError);
-        if (
-          preloadToken !== runtime.preloadToken
-          || preloadElement !== standbyAudio
-          || !audioElementMatches(preloadElement, playlistId, trackId)
-        ) {
-          resolve(false);
-          return;
+        const stillCurrent = preloadToken === runtime.preloadToken
+          && preloadElement === standbyAudio
+          && audioElementMatches(preloadElement, playlistId, trackId);
+        const confirmedReady = Boolean(
+          stillCurrent
+          && ready
+          && !preloadElement.error
+          && preloadElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+        );
+        if (stillCurrent) {
+          runtime.preloadedReady = confirmedReady;
+          runtime.preloadError = error || preloadElement.error || null;
+          runtime.preloadPromise = null;
+          if (!confirmedReady) {
+            runtime.preloadedPlaylistId = null;
+            runtime.preloadedTrackId = null;
+            resetAudioElement(preloadElement);
+          }
         }
-        resolve(ready);
+        resolve(confirmedReady);
       };
-      const handleCanPlay = () => finish(true);
-      const handleError = () => finish(false);
+      const handleReady = () => finish(true);
+      const handleError = () => finish(false, preloadElement.error);
 
-      if (preloadElement.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+      if (preloadElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && !preloadElement.error) {
         finish(true);
         return;
       }
 
-      preloadElement.addEventListener('canplay', handleCanPlay, { once: true });
+      ['loadeddata', 'canplay', 'canplaythrough'].forEach((name) => {
+        preloadElement.addEventListener(name, handleReady, { once: true });
+      });
       preloadElement.addEventListener('error', handleError, { once: true });
       timeoutId = window.setTimeout(
         () => finish(preloadElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA),
         12000
       );
     });
+
+    runtime.preloadPromise = promise;
+    return promise;
   }
 
   function preloadNextTrack() {
     if (runtime.repeatMode === 'one' || runtime.queue.length < 2) {
-      runtime.preloadedPlaylistId = null;
-      runtime.preloadedTrackId = null;
-      runtime.preloadToken += 1;
-      resetAudioElement(standbyAudio);
+      clearPreloadState({ reset: true });
       return;
     }
     const next = queuedTrackEntry(1);
@@ -1916,20 +2148,30 @@
   }
 
   function takePreparedAudio(playlistId, trackId) {
-    if (!standbyMatches(playlistId, trackId)) return false;
+    if (
+      !standbyMatches(playlistId, trackId)
+      || !runtime.preloadedReady
+      || standbyAudio.error
+      || standbyAudio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA
+    ) return false;
 
     const previousAudio = audio;
     const preparedAudio = standbyAudio;
+    try { previousAudio.pause(); } catch (_) { /* Ignore an old-player pause failure. */ }
     audio = preparedAudio;
     standbyAudio = previousAudio;
-    previousAudio.pause();
     syncAudioRoles();
 
     runtime.preloadToken += 1;
     runtime.preloadedPlaylistId = null;
     runtime.preloadedTrackId = null;
+    runtime.preloadedReady = false;
+    runtime.preloadPromise = null;
+    runtime.preloadError = null;
 
     try {
+      audio.muted = false;
+      audio.volume = 1;
       if (audio.currentTime > 0.05) audio.currentTime = 0;
     } catch (_) { /* Some formats do not allow seeking before metadata is ready. */ }
 
@@ -1961,14 +2203,15 @@
     if (!runtime.activeTrackId || !audio) return false;
 
     const commandId = ++runtime.playbackCommandId;
-    const targetAudio = audio;
     runtime.playbackHealthToken += 1;
     runtime.playbackDesired = Boolean(shouldPlay);
     runtime.playbackPending = Boolean(shouldPlay);
+    if (shouldPlay) runtime.retryPlaybackWhenOnline = false;
 
     if (!shouldPlay) {
       runtime.playbackDesired = false;
       runtime.playbackPending = false;
+      runtime.retryPlaybackWhenOnline = false;
       audioPlayers.forEach((element) => {
         if (!element.paused) {
           try { element.pause(); } catch (_) { /* Ignore media pause failures. */ }
@@ -1981,46 +2224,36 @@
     }
 
     audioPlayers.forEach((element) => {
-      if (element !== targetAudio && !element.paused) {
+      if (element !== audio && !element.paused) {
         try { element.pause(); } catch (_) { /* Keep only the active player audible. */ }
       }
     });
     syncAudioRoles();
 
-    try {
-      if (commandId !== runtime.playbackCommandId || targetAudio !== audio || !runtime.playbackDesired) return false;
-      syncAudioRoles();
-      const playResult = targetAudio.play();
-      if (playResult && typeof playResult.then === 'function') await playResult;
+    const result = await startPlaybackWithRecovery(commandId, { ...options });
+    if (result.superseded || commandId !== runtime.playbackCommandId) return false;
 
-      if (
-        commandId !== runtime.playbackCommandId
-        || targetAudio !== audio
-        || !runtime.playbackDesired
-      ) {
-        try { targetAudio.pause(); } catch (_) { /* A newer command superseded this play. */ }
-        return false;
-      }
-
+    if (result.ok) {
       runtime.playbackPending = false;
+      runtime.playbackDesired = true;
+      runtime.retryPlaybackWhenOnline = false;
       syncAudioRoles();
       updatePlayerDom();
       updateNowPlayingModal();
       updateMediaSession();
-      verifyPlaybackProgress(targetAudio, commandId);
+      verifyPlaybackProgress(audio, commandId);
+      preloadNextTrack();
       return true;
-    } catch (error) {
-      if (commandId === runtime.playbackCommandId) {
-        runtime.playbackPending = false;
-        runtime.playbackDesired = false;
-      }
-      console.warn('Playback command failed.', error);
-      updatePlayerDom();
-      updateNowPlayingModal();
-      updateMediaSession();
-      if (options.showError !== false) showToast('Playback could not start.', true);
-      return false;
     }
+
+    runtime.playbackPending = false;
+    runtime.playbackDesired = false;
+    runtime.retryPlaybackWhenOnline = Boolean(!navigator.onLine || result?.media?.code === 2);
+    updatePlayerDom();
+    updateNowPlayingModal();
+    updateMediaSession();
+    if (options.showError !== false) showPlaybackFailure(result, Boolean(options.recovery));
+    return false;
   }
 
   async function playTrack(playlistId, trackId, options = {}) {
@@ -2050,10 +2283,7 @@
 
     const usedPreparedAudio = takePreparedAudio(playlistId, trackId);
     if (!usedPreparedAudio) {
-      runtime.preloadToken += 1;
-      runtime.preloadedPlaylistId = null;
-      runtime.preloadedTrackId = null;
-      resetAudioElement(standbyAudio);
+      clearPreloadState({ reset: true });
       runtime.playbackCommandId += 1;
       runtime.playbackPending = false;
       runtime.playbackDesired = false;
@@ -2065,7 +2295,6 @@
     render();
     window.scrollTo({ top: preservedScrollY, behavior: 'auto' });
     updateMediaSession();
-    preloadNextTrack();
     ensureTrackWaveform(track);
     await setPlaybackState(true);
     updatePlayerDom();
@@ -2078,15 +2307,18 @@
   }
 
   function stopPlayback() {
-    runtime.preloadToken += 1;
+    clearPreloadState();
     runtime.playbackCommandId += 1;
     runtime.playbackPending = false;
     runtime.playbackDesired = false;
+    runtime.retryPlaybackWhenOnline = false;
     audioPlayers.forEach(resetAudioElement);
     audio = primaryAudio;
     standbyAudio = audioPlayers.find((element) => element !== audio) || standbyAudio;
     runtime.preloadedPlaylistId = null;
     runtime.preloadedTrackId = null;
+    runtime.preloadedReady = false;
+    runtime.preloadPromise = null;
     runtime.handoffInProgress = false;
     runtime.activePlaylistId = null;
     runtime.activeTrackId = null;
@@ -2635,6 +2867,8 @@
         }
         return;
       }
+      try { element.muted = false; element.volume = 1; } catch (_) { /* Keep the active route audible. */ }
+      runtime.playbackFailureToastAt = 0;
       updatePlayerDom();
       updateNowPlayingModal();
       updateMediaSession();
@@ -2643,7 +2877,8 @@
     });
     element.addEventListener('pause', () => {
       if (element !== audio) return;
-      if (!runtime.temporaryPause && !runtime.playbackPending && !runtime.playbackRecoveryPending) {
+      const backgroundInterruption = document.hidden && runtime.playbackDesired;
+      if (!runtime.temporaryPause && !runtime.playbackPending && !runtime.playbackRecoveryPending && !backgroundInterruption) {
         runtime.playbackDesired = false;
       }
       updatePlayerDom();
@@ -2670,20 +2905,69 @@
       if (element !== audio || !runtime.playbackDesired) return;
       if (element.muted || element.volume === 0) syncAudioRoles();
     });
+    const updateStandbyReadiness = () => {
+      if (
+        element === standbyAudio
+        && element.dataset.playlistId === runtime.preloadedPlaylistId
+        && element.dataset.trackId === runtime.preloadedTrackId
+        && !element.error
+        && element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA
+      ) {
+        runtime.preloadedReady = true;
+      }
+    };
+    element.addEventListener('loadeddata', updateStandbyReadiness);
+    element.addEventListener('canplay', updateStandbyReadiness);
     element.addEventListener('error', () => {
       if (element === standbyAudio) {
-        runtime.preloadToken += 1;
-        runtime.preloadedPlaylistId = null;
-        runtime.preloadedTrackId = null;
-        resetAudioElement(standbyAudio);
+        runtime.preloadError = element.error || new Error('Standby preload failed.');
+        clearPreloadState({ reset: true });
         return;
       }
-      if (element === audio) showToast('This audio format could not be played.', true);
+      if (element === audio) {
+        console.warn('Active audio element reported an error.', mediaErrorDetails(element));
+        if (runtime.playbackDesired && !runtime.playbackPending && !runtime.playbackRecoveryPending) {
+          void recoverSilentPlayback(element, runtime.playbackCommandId, element.currentTime || 0);
+        }
+      }
     });
   }
 
   audioPlayers.forEach(bindAudioPlayer);
   syncAudioRoles();
+
+
+  function restorePlaybackAfterInterruption() {
+    if (!runtime.activeTrackId || runtime.playbackPending || runtime.playbackRecoveryPending) return;
+    if (runtime.retryPlaybackWhenOnline && navigator.onLine) {
+      runtime.retryPlaybackWhenOnline = false;
+      void setPlaybackState(true, {
+        showError: true,
+        forceReload: true,
+        resumeTime: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+        recovery: true
+      });
+      return;
+    }
+    if (!runtime.playbackDesired) return;
+    syncAudioRoles();
+    if (audio.paused || audio.error || audio.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+      void setPlaybackState(true, {
+        showError: false,
+        forceReload: Boolean(audio.error),
+        resumeTime: Number.isFinite(audio.currentTime) ? audio.currentTime : 0,
+        recovery: true
+      });
+      return;
+    }
+    verifyPlaybackProgress(audio, runtime.playbackCommandId);
+  }
+
+  window.addEventListener('online', restorePlaybackAfterInterruption);
+  window.addEventListener('pageshow', restorePlaybackAfterInterruption);
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) window.setTimeout(restorePlaybackAfterInterruption, 120);
+  });
 
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {

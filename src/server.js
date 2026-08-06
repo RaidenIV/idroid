@@ -267,6 +267,37 @@ function contentTypeFor(track) {
   return types[extension] || 'application/octet-stream';
 }
 
+function pipeAudioFile(req, res, next, filePath, options = {}) {
+  const stream = fs.createReadStream(filePath, {
+    start: options.start,
+    end: options.end,
+    highWaterMark: 512 * 1024
+  });
+  let finished = false;
+  const cleanup = () => {
+    req.removeListener('aborted', abort);
+    res.removeListener('close', close);
+  };
+  const abort = () => {
+    if (!finished) stream.destroy();
+  };
+  const close = () => {
+    if (!finished && !res.writableEnded) stream.destroy();
+  };
+  req.once('aborted', abort);
+  res.once('close', close);
+  stream.once('end', () => {
+    finished = true;
+    cleanup();
+  });
+  stream.once('error', (error) => {
+    cleanup();
+    if (!res.headersSent) next(error);
+    else res.destroy(error);
+  });
+  stream.pipe(res);
+}
+
 const upload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, callback) => callback(null, TEMP_DIR),
@@ -432,10 +463,13 @@ app.get('/api/tracks/:trackId/audio', async (req, res, next) => {
     res.set({
       'Accept-Ranges': 'bytes',
       'Content-Type': contentTypeFor(match.track),
-      'Cache-Control': 'public, max-age=31536000, immutable',
+      'Cache-Control': 'public, max-age=31536000, immutable, no-transform',
       'Content-Disposition': `inline; filename*=UTF-8''${encodeURIComponent(match.track.fileName || 'audio')}`,
+      'Content-Encoding': 'identity',
       'ETag': etag,
       'Last-Modified': file.mtime.toUTCString(),
+      'Vary': 'Range',
+      'X-Content-Type-Options': 'nosniff',
       'Cross-Origin-Resource-Policy': 'same-origin'
     });
 
@@ -447,7 +481,7 @@ app.get('/api/tracks/:trackId/audio', async (req, res, next) => {
     if (!range) {
       res.status(200).set('Content-Length', total);
       res.flushHeaders();
-      fs.createReadStream(filePath, { highWaterMark: 256 * 1024 }).on('error', next).pipe(res);
+      pipeAudioFile(req, res, next, filePath);
       return;
     }
 
@@ -477,7 +511,7 @@ app.get('/api/tracks/:trackId/audio', async (req, res, next) => {
       'Content-Length': chunkSize
     });
     res.flushHeaders();
-    fs.createReadStream(filePath, { start, end, highWaterMark: 256 * 1024 }).on('error', next).pipe(res);
+    pipeAudioFile(req, res, next, filePath, { start, end });
   } catch (error) {
     if (error.code === 'ENOENT') return res.status(404).end();
     next(error);
