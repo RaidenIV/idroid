@@ -3444,3 +3444,62 @@ body.home-view.player-visible .player-dock {
     will-change: auto;
   }
 }
+
+/* Playback reliability/UI corrections: stable song rows and collision-free Home controls. */
+.track-main,
+.track-main:hover,
+.track-main:focus,
+.track-main:active {
+  scale: 1 !important;
+  transform: none !important;
+  transition: color .18s ease, opacity .18s ease !important;
+  animation: none !important;
+}
+
+.track-row,
+.track-row:active {
+  transform: none !important;
+  scale: 1 !important;
+}
+
+/* Reserve separate fixed lanes for the compact player and Add button. */
+body.home-view.player-visible {
+  --home-control-size: 72px;
+  --home-control-edge: 20px;
+  --home-control-gap: 12px;
+}
+
+body.home-view.player-visible .home-add {
+  left: auto !important;
+  right: var(--home-control-edge) !important;
+  width: var(--home-control-size) !important;
+  min-width: var(--home-control-size) !important;
+  height: var(--home-control-size) !important;
+  transform: none !important;
+  border-radius: 50% !important;
+}
+
+body.home-view.player-visible .player-dock {
+  left: var(--home-control-edge) !important;
+  right: calc(var(--home-control-edge) + var(--home-control-size) + var(--home-control-gap)) !important;
+  width: auto !important;
+  max-width: none !important;
+  min-height: var(--home-control-size) !important;
+  transform: translateY(0) !important;
+}
+
+@media (max-width: 620px) {
+  body.home-view.player-visible {
+    --home-control-size: 64px;
+    --home-control-edge: 12px;
+    --home-control-gap: 10px;
+  }
+}
+
+@media (max-width: 360px) {
+  body.home-view.player-visible {
+    --home-control-edge: 8px;
+    --home-control-gap: 8px;
+  }
+}
+

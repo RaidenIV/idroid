@@ -137,6 +137,8 @@
     waveformAnalyses: new Map(),
     playbackFrame: 0,
     playbackFrameTimestamp: 0,
+    playbackHealthToken: 0,
+    playbackRecoveryPending: false,
     audioContext: null
   };
 
@@ -1646,9 +1648,126 @@
     return `/api/tracks/${encodeURIComponent(track.id)}/audio?v=${version}`;
   }
 
+  function syncAudioRoles() {
+    audioPlayers.forEach((element) => {
+      const isActive = element === audio;
+      try {
+        element.muted = !isActive;
+        element.volume = 1;
+        element.defaultPlaybackRate = 1;
+        element.playbackRate = 1;
+      } catch (_) {
+        // Some iOS media properties can briefly reject writes while sources change.
+      }
+    });
+  }
+
+  function waitForPlayable(element, timeout = 2400) {
+    if (!element) return Promise.resolve(false);
+    if (element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer = 0;
+      const finish = (ready) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        element.removeEventListener('canplay', onReady);
+        element.removeEventListener('playing', onReady);
+        element.removeEventListener('error', onError);
+        resolve(ready);
+      };
+      const onReady = () => finish(true);
+      const onError = () => finish(false);
+      element.addEventListener('canplay', onReady, { once: true });
+      element.addEventListener('playing', onReady, { once: true });
+      element.addEventListener('error', onError, { once: true });
+      timer = window.setTimeout(
+        () => finish(element.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA),
+        timeout
+      );
+    });
+  }
+
+  async function recoverSilentPlayback(element, commandId, startTime) {
+    if (
+      !element
+      || element !== audio
+      || commandId !== runtime.playbackCommandId
+      || !runtime.playbackDesired
+      || runtime.playbackRecoveryPending
+    ) return false;
+
+    runtime.playbackRecoveryPending = true;
+    const recoveryToken = ++runtime.playbackHealthToken;
+    const resumeTime = Number.isFinite(element.currentTime) ? element.currentTime : startTime;
+
+    try {
+      syncAudioRoles();
+      try { element.pause(); } catch (_) { /* Ignore a transient pause failure. */ }
+
+      if (element.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) {
+        try { element.load(); } catch (_) { /* Keep the current source if reload is rejected. */ }
+        await waitForPlayable(element);
+      }
+
+      if (
+        recoveryToken !== runtime.playbackHealthToken
+        || commandId !== runtime.playbackCommandId
+        || element !== audio
+        || !runtime.playbackDesired
+      ) return false;
+
+      if (Number.isFinite(resumeTime) && Math.abs(element.currentTime - resumeTime) > .2) {
+        try { element.currentTime = resumeTime; } catch (_) { /* Metadata may still be settling. */ }
+      }
+
+      syncAudioRoles();
+      const result = element.play();
+      if (result && typeof result.then === 'function') await result;
+      return (
+        recoveryToken === runtime.playbackHealthToken
+        && commandId === runtime.playbackCommandId
+        && element === audio
+        && runtime.playbackDesired
+        && !element.paused
+      );
+    } catch (error) {
+      console.warn('Silent playback recovery failed.', error);
+      return false;
+    } finally {
+      runtime.playbackRecoveryPending = false;
+      updatePlayerDom();
+      updateNowPlayingModal();
+      updateMediaSession();
+    }
+  }
+
+  function verifyPlaybackProgress(element, commandId) {
+    if (!element || element !== audio || !runtime.playbackDesired) return;
+    const healthToken = ++runtime.playbackHealthToken;
+    const startTime = Number.isFinite(element.currentTime) ? element.currentTime : 0;
+
+    window.setTimeout(() => {
+      if (
+        healthToken !== runtime.playbackHealthToken
+        || commandId !== runtime.playbackCommandId
+        || element !== audio
+        || !runtime.playbackDesired
+        || element.paused
+        || element.ended
+      ) return;
+
+      const currentTime = Number.isFinite(element.currentTime) ? element.currentTime : startTime;
+      if (currentTime - startTime >= .035) return;
+      void recoverSilentPlayback(element, commandId, startTime);
+    }, 850);
+  }
+
   function resetAudioElement(element) {
     if (!element) return;
     try { element.pause(); } catch (_) { /* The element may not have started. */ }
+    try { element.muted = element !== audio; element.volume = 1; } catch (_) { /* Ignore transient iOS media writes. */ }
     element.removeAttribute('src');
     delete element.dataset.trackId;
     delete element.dataset.playlistId;
@@ -1666,6 +1785,7 @@
     element.src = trackStreamUrl(track);
     element.dataset.trackId = track.id;
     element.dataset.playlistId = playlistId;
+    try { element.muted = element !== audio; element.volume = 1; } catch (_) { /* Ignore transient iOS media writes. */ }
     element.load();
   }
 
@@ -1803,6 +1923,7 @@
     audio = preparedAudio;
     standbyAudio = previousAudio;
     previousAudio.pause();
+    syncAudioRoles();
 
     runtime.preloadToken += 1;
     runtime.preloadedPlaylistId = null;
@@ -1841,6 +1962,7 @@
 
     const commandId = ++runtime.playbackCommandId;
     const targetAudio = audio;
+    runtime.playbackHealthToken += 1;
     runtime.playbackDesired = Boolean(shouldPlay);
     runtime.playbackPending = Boolean(shouldPlay);
 
@@ -1863,8 +1985,11 @@
         try { element.pause(); } catch (_) { /* Keep only the active player audible. */ }
       }
     });
+    syncAudioRoles();
 
     try {
+      if (commandId !== runtime.playbackCommandId || targetAudio !== audio || !runtime.playbackDesired) return false;
+      syncAudioRoles();
       const playResult = targetAudio.play();
       if (playResult && typeof playResult.then === 'function') await playResult;
 
@@ -1878,9 +2003,11 @@
       }
 
       runtime.playbackPending = false;
+      syncAudioRoles();
       updatePlayerDom();
       updateNowPlayingModal();
       updateMediaSession();
+      verifyPlaybackProgress(targetAudio, commandId);
       return true;
     } catch (error) {
       if (commandId === runtime.playbackCommandId) {
@@ -1934,7 +2061,9 @@
       assignAudioSource(audio, playlistId, track);
     }
 
+    const preservedScrollY = window.scrollY;
     render();
+    window.scrollTo({ top: preservedScrollY, behavior: 'auto' });
     updateMediaSession();
     preloadNextTrack();
     ensureTrackWaveform(track);
@@ -2303,7 +2432,7 @@
       default: break;
     }
 
-    if (miniPlayer && action !== 'open-now-playing') {
+    if (miniPlayer && action !== 'open-now-playing' && action !== 'toggle-play') {
       requestAnimationFrame(openNowPlayingModal);
     }
   }
@@ -2514,7 +2643,7 @@
     });
     element.addEventListener('pause', () => {
       if (element !== audio) return;
-      if (!runtime.temporaryPause && !runtime.playbackPending) {
+      if (!runtime.temporaryPause && !runtime.playbackPending && !runtime.playbackRecoveryPending) {
         runtime.playbackDesired = false;
       }
       updatePlayerDom();
@@ -2531,6 +2660,16 @@
       }
       void playNext(1, { automatic: true });
     });
+    const verifyActivePlayback = () => {
+      if (element !== audio || !runtime.playbackDesired || element.paused || element.ended) return;
+      verifyPlaybackProgress(element, runtime.playbackCommandId);
+    };
+    element.addEventListener('waiting', verifyActivePlayback);
+    element.addEventListener('stalled', verifyActivePlayback);
+    element.addEventListener('volumechange', () => {
+      if (element !== audio || !runtime.playbackDesired) return;
+      if (element.muted || element.volume === 0) syncAudioRoles();
+    });
     element.addEventListener('error', () => {
       if (element === standbyAudio) {
         runtime.preloadToken += 1;
@@ -2544,6 +2683,7 @@
   }
 
   audioPlayers.forEach(bindAudioPlayer);
+  syncAudioRoles();
 
 
   if ('serviceWorker' in navigator && location.protocol.startsWith('http')) {
